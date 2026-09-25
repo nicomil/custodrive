@@ -347,6 +347,20 @@ int oh_ntfs_list(OHNTFSVolume *ctx, uint64_t directory,
     return error;
 }
 
+int oh_ntfs_free_bytes(OHNTFSVolume *ctx, uint64_t *out_bytes)
+{
+    if (!ctx || !out_bytes) return EINVAL;
+    pthread_mutex_lock(&ctx->lock);
+    int status = ntfs_volume_get_free_space(ctx->ntfs);
+    s64 clusters = ctx->ntfs->free_clusters;
+    u32 size = ctx->ntfs->cluster_size;
+    int error = status || clusters < 0 || !size ||
+        (uint64_t)clusters > UINT64_MAX / size ? EIO : 0;
+    if (!error) *out_bytes = (uint64_t)clusters * size;
+    pthread_mutex_unlock(&ctx->lock);
+    return error;
+}
+
 int64_t oh_ntfs_read(OHNTFSVolume *ctx, uint64_t inode,
                      uint64_t offset, void *buffer, uint64_t length)
 {

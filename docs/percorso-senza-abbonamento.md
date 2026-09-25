@@ -14,6 +14,8 @@ L'arresto simulato lascia un file `.OpenHDD-pending-...` incompleto. `ntfsfix -n
 
 Il laboratorio della fase 2 inietta errori di lettura, scrittura a blocchi e sync, oltre a simulare disco pieno. Il binario dei test rifiuta `--disk`: può operare solo su immagini private. Nei casi provati nessun errore ha prodotto `PASS` e il file precedente è rimasto leggibile con byte identici. Se il guasto arriva dopo la pubblicazione, il nome nuovo può essere visibile anche se l'operazione segnala errore; la sua persistenza dopo perdita di alimentazione resta ignota. L'errore I/O rimane registrato per tutta l'operazione, così un errore interno eventualmente mascherato dalla libreria non può diventare successo.
 
+Prima di scrivere, il motore ora legge la bitmap NTFS in sola lettura e richiede spazio libero pari al file più una riserva conservativa: almeno 16 MiB, oppure l'1% del file se maggiore. Un file da 128 MiB su immagine da 128 MiB viene rifiutato senza cambiare alcun byte. Una seconda prova inietta `ENOSPC` durante la scrittura: nessun `PASS`, file precedente intatto. Il controllo preliminare riduce i fallimenti prevedibili ma non garantisce spazio sufficiente durante ogni copia.
+
 ## Requisiti del gestore offline
 
 1. CLI locale con richieste tipizzate, ora disponibile per il collaudo controllato. L'interfaccia grafica per preparare il trasferimento resta da realizzare dopo la prova fisica. I permessi amministrativi sono richiesti per la singola operazione tramite `sudo`; il percorso definitivo di autenticazione deve essere verificato su macOS 15.4 e 27 senza certificato a pagamento.

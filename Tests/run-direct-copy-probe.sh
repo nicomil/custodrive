@@ -130,7 +130,7 @@ fi
 cmp "$source_file" "$fixture/linked-readback.bin"
 
 # Low-level I/O failures at preflight, data write, sync, and final read.
-for fault in pread-1 pwrite-100 sync-1 sync-5 pread-500; do
+for fault in pread-1 pwrite-100 nospace-100 sync-1 sync-5 pread-500; do
   kind=${fault%-*}
   number=${fault#*-}
   failed="$fixture/fault-$fault.img"
@@ -138,6 +138,7 @@ for fault in pread-1 pwrite-100 sync-1 sync-5 pread-500; do
   case "$kind" in
     pread) variable=OPENHDD_TEST_FAIL_PREAD_AT ;;
     pwrite) variable=OPENHDD_TEST_FAIL_PWRITE_AT ;;
+    nospace) variable=OPENHDD_TEST_ENOSPC_PWRITE_AT ;;
     sync) variable=OPENHDD_TEST_FAIL_SYNC_AT ;;
   esac
   if env "$variable=$number" "$root/Build/OpenHDDCopyTest" \
@@ -163,23 +164,19 @@ grep -q 'stage 5' "$fixture/fault-pread-500.log"
 full="$fixture/full.img"
 cp "$image" "$full"
 mkfile -n 128m "$fixture/too-large.bin"
+before=$(shasum -a 256 "$full" | awk '{print $1}')
 if "$root/Build/OpenHDDCopyTest" --image "$full" "$fixture/too-large.bin" full.bin > "$fixture/full.log" 2>&1; then
   echo 'FAIL: full image reported success' >&2
   exit 1
 fi
+grep -q 'Copy failed at stage 1; code 28' "$fixture/full.log"
 if "$build/ntfsprogs/ntfscat" "$full" /full.bin > "$fixture/full-readback.bin" 2>/dev/null; then
   echo 'FAIL: full image published incomplete file' >&2
   exit 1
 fi
 "$build/ntfsprogs/ntfscat" "$full" /verified.bin > "$fixture/old-full.bin"
 cmp "$source_file" "$fixture/old-full.bin"
-before=$(shasum -a 256 "$full" | awk '{print $1}')
 "$build/ntfsprogs/ntfsfix" -n "$full" > "$fixture/full-check.log" 2>&1
-if "$root/Build/OpenHDDCopyTest" --image "$full" "$source_file" retry.bin > "$fixture/full-retry.log" 2>&1; then
-  echo 'FAIL: copy accepted unfinished transfer after full image' >&2
-  exit 1
-fi
-grep -q 'Refused: unfinished OpenHDD transfer found' "$fixture/full-retry.log"
 after=$(shasum -a 256 "$full" | awk '{print $1}')
 test "$before" = "$after"
 

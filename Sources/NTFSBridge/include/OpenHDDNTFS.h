@@ -38,6 +38,7 @@ int oh_ntfs_lookup(OHNTFSVolume *volume, uint64_t parent,
                    const char *utf8_name, OHNTFSItem *out);
 int oh_ntfs_list(OHNTFSVolume *volume, uint64_t directory,
                  OHNTFSEntryCallback callback, void *context);
+int oh_ntfs_free_bytes(OHNTFSVolume *volume, uint64_t *out_bytes);
 int64_t oh_ntfs_read(OHNTFSVolume *volume, uint64_t inode,
                      uint64_t offset, void *buffer, uint64_t length);
 uint64_t oh_ntfs_write_attempts(OHNTFSVolume *volume);

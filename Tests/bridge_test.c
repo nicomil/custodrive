@@ -56,6 +56,9 @@ int main(int argc, char **argv)
     int count = 0;
     assert(oh_ntfs_list(volume, 5, visit, &count) == 0);
     assert(count >= 1);
+    uint64_t free_bytes = 0;
+    assert(oh_ntfs_free_bytes(volume, &free_bytes) == 0);
+    assert(free_bytes > 0);
     OHNTFSItem known;
     assert(oh_ntfs_lookup(volume, 5, "known.txt", &known) == 0);
     assert(known.kind == 1);

@@ -54,6 +54,7 @@ Questa prima prova non valida resistenza a scollegamento durante scrittura o per
 
 ## Laboratorio fase 2 — errori su immagini
 
-- `OpenHDDCopyTest` rifiuta ogni richiesta `--disk`. Errori iniettati su lettura, scrittura a blocchi, sincronizzazione e spazio esaurito sono stati provati su immagini NTFS private.
+- `OpenHDDCopyTest` rifiuta ogni richiesta `--disk`. Errori iniettati su lettura, scrittura a blocchi, sincronizzazione e spazio esaurito durante la copia sono stati provati su immagini NTFS private.
 - Nessun caso ha riportato `PASS`. Il file già presente è rimasto leggibile e identico alla sorgente. Il controllo `ntfsfix -n` non ha segnalato problemi di base; l'hash di ogni immagine è rimasto invariato durante il solo controllo.
+- Se lo spazio libero dichiarato dalla bitmap NTFS è inferiore alla dimensione della sorgente più una riserva, la copia viene rifiutata prima di creare il file temporaneo. Nell'immagine piena di prova l'hash dell'intera immagine è rimasto identico.
 - Un errore dopo la creazione del nome finale può lasciare quel nome visibile pur senza esito di successo. Non interpretare la presenza del file come prova che sia stato sincronizzato sul dispositivo. Mancano ancora guasti USB reali e `chkdsk` Windows sulle immagini dopo ogni scenario.

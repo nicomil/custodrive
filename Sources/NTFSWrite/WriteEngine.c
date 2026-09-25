@@ -89,11 +89,16 @@ static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
             errno = EIO;
             return -1;
         }
-        if (writing && fail_at("OPENHDD_TEST_FAIL_PWRITE_AT",
-                               ++target->write_calls)) {
-            target->io_failed = 1;
-            errno = EIO;
-            return -1;
+        if (writing) {
+            ++target->write_calls;
+            int injected_error =
+                fail_at("OPENHDD_TEST_FAIL_PWRITE_AT", target->write_calls) ? EIO :
+                fail_at("OPENHDD_TEST_ENOSPC_PWRITE_AT", target->write_calls) ? ENOSPC : 0;
+            if (injected_error) {
+                target->io_failed = 1;
+                errno = injected_error;
+                return -1;
+            }
         }
         #endif
         ssize_t n = writing ?
@@ -258,7 +263,8 @@ static int check_unpublished_pending_entry(void *opaque, const char *name,
     return 0;
 }
 
-static int readonly_check_unpublished_pending(Target *target)
+static int readonly_check_unpublished_pending(Target *target,
+                                              uint64_t *free_bytes)
 {
     OHNTFSVolume *volume = NULL;
     uint32_t warnings = 0;
@@ -268,6 +274,7 @@ static int readonly_check_unpublished_pending(Target *target)
     status = warnings ? EBUSY : oh_ntfs_list(volume, FILE_root,
                                             check_unpublished_pending_entry,
                                             NULL);
+    if (!status) status = oh_ntfs_free_bytes(volume, free_bytes);
     oh_ntfs_close(volume);
     return status;
 }
@@ -469,9 +476,13 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
     int status = readonly_lookup(&target, destination_name, &item, &warnings);
     if (target.io_failed) return EIO;
     if (status != ENOENT) return status ? status : EEXIST;
-    status = readonly_check_unpublished_pending(&target);
+    uint64_t free_bytes = 0;
+    status = readonly_check_unpublished_pending(&target, &free_bytes);
     if (target.io_failed) return EIO;
     if (status) return status;
+    uint64_t reserve = (uint64_t)source.st_size / 100;
+    if (reserve < 16 * 1024 * 1024) reserve = 16 * 1024 * 1024;
+    if (free_bytes < (uint64_t)source.st_size + reserve) return ENOSPC;
     char pending[64];
     unsigned char random_bytes[16];
     arc4random_buf(random_bytes, sizeof(random_bytes));
