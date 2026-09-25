@@ -1,0 +1,142 @@
+name: OpenHDD
+options:
+  bundleIdPrefix: it.openhdd
+  deploymentTarget:
+    macOS: "15.4"
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.4"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+targets:
+  OpenHDDLocal:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/OpenHDDApp/OpenHDDApp.swift
+      - path: Sources/Shared/DiskHelperProtocol.swift
+    info:
+      path: Sources/OpenHDDApp/InfoLocal.plist
+      properties:
+        CFBundleDisplayName: OpenHDD Local
+        CFBundleShortVersionString: "0.1.0"
+        LSMinimumSystemVersion: "15.4"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: it.openhdd.local
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) OPENHDD_LOCAL
+  OpenHDD:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/OpenHDDApp
+      - path: Sources/Shared/DiskHelperProtocol.swift
+      - path: Sources/LaunchDaemons/it.openhdd.app.helper.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchDaemons
+    info:
+      path: Sources/OpenHDDApp/Info.plist
+      properties:
+        CFBundleDisplayName: OpenHDD
+        CFBundleShortVersionString: "0.1.0"
+        LSMinimumSystemVersion: "15.4"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: it.openhdd.app
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - target: OpenHDDNTFS
+        embed: true
+      - target: OpenHDDHelper
+        embed: true
+        link: false
+        codeSign: true
+        copy:
+          destination: executables
+  OpenHDDNTFS:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: Sources/NTFSExtension
+      - path: Sources/NTFSBridge/OpenHDDNTFS.c
+      - path: Sources/NTFSBridge/include/OpenHDDNTFS.h
+    info:
+      path: Sources/NTFSExtension/Info.plist
+      properties:
+        CFBundlePackageType: XPC!
+        CFBundleShortVersionString: "0.1.0"
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.fskit.fsmodule
+          FSActivateOptionSyntax: {}
+          FSCheckOptionSyntax:
+            shortOptions: n
+          FSMediaTypes: {}
+          FSPersonalities:
+            OpenHDDNTFS:
+              FSName: OpenHDD NTFS (sola lettura)
+              FSfileObjectsAreCaseSensitive: false
+          FSRequiresSecurityScopedPathURLResources: false
+          FSShortName: openhdd_ntfs
+          FSSupportsBlockResources: true
+          FSSupportsGenericURLResources: false
+          FSSupportsPathURLs: false
+          FSSupportsServerURLs: false
+    entitlements:
+      path: Sources/NTFSExtension/NTFSExtension.entitlements
+      properties:
+        com.apple.developer.fskit.fsmodule: true
+    dependencies:
+      - target: NTFS3GStatic
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: it.openhdd.app.ntfs
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/NTFSBridge/include/OpenHDDNTFS.h
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Sources/NTFSBridge/include
+          - $(PROJECT_DIR)/vendor/ntfs-3g-2026.7.7/include
+          - $(PROJECT_DIR)/Build/ntfs3g
+        OTHER_LDFLAGS:
+          - $(PROJECT_DIR)/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a
+          - -framework
+          - CoreFoundation
+  OpenHDDHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/DiskHelper
+      - path: Sources/Shared/DiskHelperProtocol.swift
+      - path: Sources/NTFSBridge/OpenHDDNTFS.c
+      - path: Sources/NTFSBridge/include/OpenHDDNTFS.h
+    dependencies:
+      - target: NTFS3GStatic
+        link: false
+    settings:
+      base:
+        PRODUCT_NAME: OpenHDDHelper
+        PRODUCT_BUNDLE_IDENTIFIER: it.openhdd.app.helper
+        CODE_SIGNING_ALLOWED: YES
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/NTFSBridge/include/OpenHDDNTFS.h
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Sources/NTFSBridge/include
+          - $(PROJECT_DIR)/vendor/ntfs-3g-2026.7.7/include
+          - $(PROJECT_DIR)/Build/ntfs3g
+        OTHER_LDFLAGS:
+          - $(PROJECT_DIR)/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a
+          - -framework
+          - CoreFoundation
+  NTFS3GStatic:
+    type: ""
+    platform: macOS
+    legacy:
+      toolPath: /bin/sh
+      arguments: $(PROJECT_DIR)/Scripts/build-ntfs3g.sh
+      passSettings: true
+      workingDirectory: $(PROJECT_DIR)

@@ -1,0 +1,825 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1065ADD6C22DBDCFD60D6AE8 /* OpenHDDHelper in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1F0C02F0C73B77667623278F /* OpenHDDNTFS.c in Sources */ = {isa = PBXBuildFile; fileRef = 03D229F0D82931616542DA57 /* OpenHDDNTFS.c */; };
+		338C99247438D9A7FAB68AE8 /* OpenHDDNTFS.c in Sources */ = {isa = PBXBuildFile; fileRef = 03D229F0D82931616542DA57 /* OpenHDDNTFS.c */; };
+		5286F49315F2A31553D81A37 /* DiskHelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */; };
+		6526313D1341ED3A4F800A47 /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
+		77FDA0A83D02DF7E59AB2101 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DB571EF6AFBA8AECD59611 /* NTFSFileSystem.swift */; };
+		8FE19B2FFC9ADF50FE9D7145 /* InfoLocal.plist in Resources */ = {isa = PBXBuildFile; fileRef = 7314169618686C21A0C8D68B /* InfoLocal.plist */; };
+		9A436C837BBE6D91BA64C3C5 /* OpenHDDApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */; };
+		9F9477FCD661D11C93F0548E /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
+		A0B6DF74DF192BB1C4ED324A /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
+		B844C3E2BF2C82D309162AB2 /* OpenHDDVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A73CEC1BAB69F50E6F97641 /* OpenHDDVolume.swift */; };
+		E268221B1ABE182989872A5F /* HelperClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00EB2874E444E83AEC55463D /* HelperClient.swift */; };
+		E634B114F319111FF4BE74CE /* OpenHDDApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */; };
+		EB850E56FB77F36C2D266788 /* OpenHDDNTFS.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 5C8B953B8DB951E6AD2509E3 /* OpenHDDNTFS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F56150D8196F7CA1FF44F1D2 /* it.openhdd.app.helper.plist in CopyFiles */ = {isa = PBXBuildFile; fileRef = 8853BC9AA2BA658E4ABB38CF /* it.openhdd.app.helper.plist */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		3F76AE883F306A692EA935FD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 248F5415273CBE5ECF01DB8F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9884776478AC066D12005D8F;
+			remoteInfo = OpenHDDNTFS;
+		};
+		5E45450235E62F1D772F25E7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 248F5415273CBE5ECF01DB8F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 442F455B4CD4DA96CDA6609D;
+			remoteInfo = OpenHDDHelper;
+		};
+		AA54BC731D3345F5D8F9E225 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 248F5415273CBE5ECF01DB8F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EBC9844D6A8FD490CDBC0DDB;
+			remoteInfo = NTFS3GStatic;
+		};
+		CE197788468F4F047D0E769F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 248F5415273CBE5ECF01DB8F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EBC9844D6A8FD490CDBC0DDB;
+			remoteInfo = NTFS3GStatic;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		42229D50D2A7F9DD326ED3DE /* Embed Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				1065ADD6C22DBDCFD60D6AE8 /* OpenHDDHelper in Embed Dependencies */,
+			);
+			name = "Embed Dependencies";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4B4761B1E0098E039570C5A8 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				F56150D8196F7CA1FF44F1D2 /* it.openhdd.app.helper.plist in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CD4932DE59303F1C7530681B /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				EB850E56FB77F36C2D266788 /* OpenHDDNTFS.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		00EB2874E444E83AEC55463D /* HelperClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperClient.swift; sourceTree = "<group>"; };
+		03D229F0D82931616542DA57 /* OpenHDDNTFS.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = OpenHDDNTFS.c; sourceTree = "<group>"; };
+		03DB571EF6AFBA8AECD59611 /* NTFSFileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSFileSystem.swift; sourceTree = "<group>"; };
+		14A1C0316444EA2E73618AC3 /* NTFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NTFSExtension.entitlements; sourceTree = "<group>"; };
+		20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskHelperProtocol.swift; sourceTree = "<group>"; };
+		23496A484677DC6B8101D99B /* OpenHDD.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHDD.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2AD11839730F2720A022B0BC /* OpenHDDNTFS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OpenHDDNTFS.h; sourceTree = "<group>"; };
+		3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHDDApp.swift; sourceTree = "<group>"; };
+		4A73CEC1BAB69F50E6F97641 /* OpenHDDVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHDDVolume.swift; sourceTree = "<group>"; };
+		571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */ = {isa = PBXFileReference; includeInIndex = 0; path = OpenHDDHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		5C8B953B8DB951E6AD2509E3 /* OpenHDDNTFS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = OpenHDDNTFS.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		69200E16238552B79E4EA473 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7314169618686C21A0C8D68B /* InfoLocal.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = InfoLocal.plist; sourceTree = "<group>"; };
+		7CE88E52AC4C768C1ACEB742 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		8853BC9AA2BA658E4ABB38CF /* it.openhdd.app.helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = it.openhdd.app.helper.plist; sourceTree = "<group>"; };
+		9F758E50E0EC76566220DB52 /* OpenHDDLocal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHDDLocal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskHelperMain.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		11B1CE263D200BDBA79820FE = {
+			isa = PBXGroup;
+			children = (
+				1F813AC57081D201529DEB2E /* DiskHelper */,
+				FD8FA8B204661F4F347D01B7 /* include */,
+				C615B62E2CDE41AAE9BD741B /* LaunchDaemons */,
+				A3E1F6ADBF49A0809DEC57A6 /* NTFSBridge */,
+				924D36AB384A77C891998DBF /* NTFSExtension */,
+				CFE396FF12253CC19757F800 /* OpenHDDApp */,
+				4BEB0D02335F2B9A180D59EA /* Shared */,
+				931667A029E3E367D64D1C9B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1F813AC57081D201529DEB2E /* DiskHelper */ = {
+			isa = PBXGroup;
+			children = (
+				F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */,
+			);
+			name = DiskHelper;
+			path = Sources/DiskHelper;
+			sourceTree = "<group>";
+		};
+		4BEB0D02335F2B9A180D59EA /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */,
+			);
+			name = Shared;
+			path = Sources/Shared;
+			sourceTree = "<group>";
+		};
+		924D36AB384A77C891998DBF /* NTFSExtension */ = {
+			isa = PBXGroup;
+			children = (
+				69200E16238552B79E4EA473 /* Info.plist */,
+				14A1C0316444EA2E73618AC3 /* NTFSExtension.entitlements */,
+				03DB571EF6AFBA8AECD59611 /* NTFSFileSystem.swift */,
+				4A73CEC1BAB69F50E6F97641 /* OpenHDDVolume.swift */,
+			);
+			name = NTFSExtension;
+			path = Sources/NTFSExtension;
+			sourceTree = "<group>";
+		};
+		931667A029E3E367D64D1C9B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				23496A484677DC6B8101D99B /* OpenHDD.app */,
+				571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */,
+				9F758E50E0EC76566220DB52 /* OpenHDDLocal.app */,
+				5C8B953B8DB951E6AD2509E3 /* OpenHDDNTFS.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A3E1F6ADBF49A0809DEC57A6 /* NTFSBridge */ = {
+			isa = PBXGroup;
+			children = (
+				03D229F0D82931616542DA57 /* OpenHDDNTFS.c */,
+			);
+			name = NTFSBridge;
+			path = Sources/NTFSBridge;
+			sourceTree = "<group>";
+		};
+		C615B62E2CDE41AAE9BD741B /* LaunchDaemons */ = {
+			isa = PBXGroup;
+			children = (
+				8853BC9AA2BA658E4ABB38CF /* it.openhdd.app.helper.plist */,
+			);
+			name = LaunchDaemons;
+			path = Sources/LaunchDaemons;
+			sourceTree = "<group>";
+		};
+		CFE396FF12253CC19757F800 /* OpenHDDApp */ = {
+			isa = PBXGroup;
+			children = (
+				00EB2874E444E83AEC55463D /* HelperClient.swift */,
+				7CE88E52AC4C768C1ACEB742 /* Info.plist */,
+				7314169618686C21A0C8D68B /* InfoLocal.plist */,
+				3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */,
+			);
+			name = OpenHDDApp;
+			path = Sources/OpenHDDApp;
+			sourceTree = "<group>";
+		};
+		FD8FA8B204661F4F347D01B7 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				2AD11839730F2720A022B0BC /* OpenHDDNTFS.h */,
+			);
+			name = include;
+			path = Sources/NTFSBridge/include;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXLegacyTarget section */
+		EBC9844D6A8FD490CDBC0DDB /* NTFS3GStatic */ = {
+			isa = PBXLegacyTarget;
+			buildArgumentsString = "$(PROJECT_DIR)/Scripts/build-ntfs3g.sh";
+			buildConfigurationList = 4950E2020C84C903CAFA047F /* Build configuration list for PBXLegacyTarget "NTFS3GStatic" */;
+			buildPhases = (
+				F824CA22BD2746A372EE32A3 /* Sources */,
+			);
+			buildToolPath = /bin/sh;
+			buildWorkingDirectory = "$(PROJECT_DIR)";
+			dependencies = (
+			);
+			name = NTFS3GStatic;
+			packageProductDependencies = (
+			);
+			passBuildSettingsInEnvironment = 1;
+			productName = NTFS3GStatic;
+		};
+/* End PBXLegacyTarget section */
+
+/* Begin PBXNativeTarget section */
+		0A8B833E815BDBE2EAC9F643 /* OpenHDDLocal */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B2EEDF4574308B8BC0585A59 /* Build configuration list for PBXNativeTarget "OpenHDDLocal" */;
+			buildPhases = (
+				3E50A83A240900DE6FC6CE6D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenHDDLocal;
+			packageProductDependencies = (
+			);
+			productName = OpenHDDLocal;
+			productReference = 9F758E50E0EC76566220DB52 /* OpenHDDLocal.app */;
+			productType = "com.apple.product-type.application";
+		};
+		442F455B4CD4DA96CDA6609D /* OpenHDDHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 48451905A2E99238A7C01CFA /* Build configuration list for PBXNativeTarget "OpenHDDHelper" */;
+			buildPhases = (
+				CB4902F737945D9FBCE2A942 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				68579FE4E9DD11D46A9340C3 /* PBXTargetDependency */,
+			);
+			name = OpenHDDHelper;
+			packageProductDependencies = (
+			);
+			productName = OpenHDDHelper;
+			productReference = 571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */;
+			productType = "com.apple.product-type.tool";
+		};
+		9884776478AC066D12005D8F /* OpenHDDNTFS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C45514252EE010713DB75448 /* Build configuration list for PBXNativeTarget "OpenHDDNTFS" */;
+			buildPhases = (
+				BFE9F8F2264BBB098C3739B4 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				81BB1BF1F83AF0DABD2468F1 /* PBXTargetDependency */,
+			);
+			name = OpenHDDNTFS;
+			packageProductDependencies = (
+			);
+			productName = OpenHDDNTFS;
+			productReference = 5C8B953B8DB951E6AD2509E3 /* OpenHDDNTFS.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
+		};
+		F75CA8D953D60E8455289D7D /* OpenHDD */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D7C139F2BC9FA148E0C52810 /* Build configuration list for PBXNativeTarget "OpenHDD" */;
+			buildPhases = (
+				2C9110632D41AE88E5D5CCE8 /* Sources */,
+				86E55983E458E4D11699BB1E /* Resources */,
+				4B4761B1E0098E039570C5A8 /* CopyFiles */,
+				CD4932DE59303F1C7530681B /* Embed ExtensionKit Extensions */,
+				42229D50D2A7F9DD326ED3DE /* Embed Dependencies */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F886D1D58FCE9DB6A65B58B6 /* PBXTargetDependency */,
+				2EE6F6F023634AF6C7C0EEFD /* PBXTargetDependency */,
+			);
+			name = OpenHDD;
+			packageProductDependencies = (
+			);
+			productName = OpenHDD;
+			productReference = 23496A484677DC6B8101D99B /* OpenHDD.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		248F5415273CBE5ECF01DB8F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0A8B833E815BDBE2EAC9F643 = {
+						ProvisioningStyle = Automatic;
+					};
+					442F455B4CD4DA96CDA6609D = {
+						ProvisioningStyle = Automatic;
+					};
+					9884776478AC066D12005D8F = {
+						ProvisioningStyle = Automatic;
+					};
+					EBC9844D6A8FD490CDBC0DDB = {
+						ProvisioningStyle = Automatic;
+					};
+					F75CA8D953D60E8455289D7D = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 7C4E84F5F2BAE737FDCB3EC3 /* Build configuration list for PBXProject "OpenHDD" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 11B1CE263D200BDBA79820FE;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 931667A029E3E367D64D1C9B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0A8B833E815BDBE2EAC9F643 /* OpenHDDLocal */,
+				F75CA8D953D60E8455289D7D /* OpenHDD */,
+				9884776478AC066D12005D8F /* OpenHDDNTFS */,
+				442F455B4CD4DA96CDA6609D /* OpenHDDHelper */,
+				EBC9844D6A8FD490CDBC0DDB /* NTFS3GStatic */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		86E55983E458E4D11699BB1E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8FE19B2FFC9ADF50FE9D7145 /* InfoLocal.plist in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2C9110632D41AE88E5D5CCE8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6526313D1341ED3A4F800A47 /* DiskHelperProtocol.swift in Sources */,
+				E268221B1ABE182989872A5F /* HelperClient.swift in Sources */,
+				9A436C837BBE6D91BA64C3C5 /* OpenHDDApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3E50A83A240900DE6FC6CE6D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9F9477FCD661D11C93F0548E /* DiskHelperProtocol.swift in Sources */,
+				E634B114F319111FF4BE74CE /* OpenHDDApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BFE9F8F2264BBB098C3739B4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				77FDA0A83D02DF7E59AB2101 /* NTFSFileSystem.swift in Sources */,
+				1F0C02F0C73B77667623278F /* OpenHDDNTFS.c in Sources */,
+				B844C3E2BF2C82D309162AB2 /* OpenHDDVolume.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CB4902F737945D9FBCE2A942 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5286F49315F2A31553D81A37 /* DiskHelperMain.swift in Sources */,
+				A0B6DF74DF192BB1C4ED324A /* DiskHelperProtocol.swift in Sources */,
+				338C99247438D9A7FAB68AE8 /* OpenHDDNTFS.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F824CA22BD2746A372EE32A3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2EE6F6F023634AF6C7C0EEFD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 442F455B4CD4DA96CDA6609D /* OpenHDDHelper */;
+			targetProxy = 5E45450235E62F1D772F25E7 /* PBXContainerItemProxy */;
+		};
+		68579FE4E9DD11D46A9340C3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EBC9844D6A8FD490CDBC0DDB /* NTFS3GStatic */;
+			targetProxy = AA54BC731D3345F5D8F9E225 /* PBXContainerItemProxy */;
+		};
+		81BB1BF1F83AF0DABD2468F1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EBC9844D6A8FD490CDBC0DDB /* NTFS3GStatic */;
+			targetProxy = CE197788468F4F047D0E769F /* PBXContainerItemProxy */;
+		};
+		F886D1D58FCE9DB6A65B58B6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9884776478AC066D12005D8F /* OpenHDDNTFS */;
+			targetProxy = 3F76AE883F306A692EA935FD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		022F67139721F9458EF35EB3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/OpenHDDApp/InfoLocal.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.local;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OPENHDD_LOCAL";
+			};
+			name = Debug;
+		};
+		0DE45480A52C50CCDD728230 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.NTFS3GStatic;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		14623CD72BF0B071B41247BF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.NTFS3GStatic;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		20947B1AF61CF17C69F36DAF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/OpenHDDApp/InfoLocal.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.local;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OPENHDD_LOCAL";
+			};
+			name = Release;
+		};
+		71F0AED0E289CF4FE322D627 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = YES;
+				COMBINE_HIDPI_IMAGES = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Sources/NTFSBridge/include",
+					"$(PROJECT_DIR)/vendor/ntfs-3g-2026.7.7/include",
+					"$(PROJECT_DIR)/Build/ntfs3g",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(PROJECT_DIR)/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a",
+					"-framework",
+					CoreFoundation,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.app.helper;
+				PRODUCT_NAME = OpenHDDHelper;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/NTFSBridge/include/OpenHDDNTFS.h;
+			};
+			name = Release;
+		};
+		73D5A130491399C00091CC92 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8339DC4E76F66262C30BA6D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/OpenHDDApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.app;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		90BB07D49E36655E560DD697 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Sources/NTFSExtension/NTFSExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Sources/NTFSBridge/include",
+					"$(PROJECT_DIR)/vendor/ntfs-3g-2026.7.7/include",
+					"$(PROJECT_DIR)/Build/ntfs3g",
+				);
+				INFOPLIST_FILE = Sources/NTFSExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(PROJECT_DIR)/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a",
+					"-framework",
+					CoreFoundation,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.app.ntfs;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/NTFSBridge/include/OpenHDDNTFS.h;
+			};
+			name = Release;
+		};
+		C22C5B71A756C0729E0CEF0E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		CCF9358E7B454C0E2923918E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/OpenHDDApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.app;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		D37F4702E43FC5B355D979CB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = YES;
+				COMBINE_HIDPI_IMAGES = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Sources/NTFSBridge/include",
+					"$(PROJECT_DIR)/vendor/ntfs-3g-2026.7.7/include",
+					"$(PROJECT_DIR)/Build/ntfs3g",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(PROJECT_DIR)/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a",
+					"-framework",
+					CoreFoundation,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.app.helper;
+				PRODUCT_NAME = OpenHDDHelper;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/NTFSBridge/include/OpenHDDNTFS.h;
+			};
+			name = Debug;
+		};
+		EA3BD0167C48D26BB15E5DB4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Sources/NTFSExtension/NTFSExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Sources/NTFSBridge/include",
+					"$(PROJECT_DIR)/vendor/ntfs-3g-2026.7.7/include",
+					"$(PROJECT_DIR)/Build/ntfs3g",
+				);
+				INFOPLIST_FILE = Sources/NTFSExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(PROJECT_DIR)/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a",
+					"-framework",
+					CoreFoundation,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.app.ntfs;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/NTFSBridge/include/OpenHDDNTFS.h;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		48451905A2E99238A7C01CFA /* Build configuration list for PBXNativeTarget "OpenHDDHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D37F4702E43FC5B355D979CB /* Debug */,
+				71F0AED0E289CF4FE322D627 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4950E2020C84C903CAFA047F /* Build configuration list for PBXLegacyTarget "NTFS3GStatic" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0DE45480A52C50CCDD728230 /* Debug */,
+				14623CD72BF0B071B41247BF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7C4E84F5F2BAE737FDCB3EC3 /* Build configuration list for PBXProject "OpenHDD" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				73D5A130491399C00091CC92 /* Debug */,
+				C22C5B71A756C0729E0CEF0E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B2EEDF4574308B8BC0585A59 /* Build configuration list for PBXNativeTarget "OpenHDDLocal" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				022F67139721F9458EF35EB3 /* Debug */,
+				20947B1AF61CF17C69F36DAF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C45514252EE010713DB75448 /* Build configuration list for PBXNativeTarget "OpenHDDNTFS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EA3BD0167C48D26BB15E5DB4 /* Debug */,
+				90BB07D49E36655E560DD697 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D7C139F2BC9FA148E0C52810 /* Build configuration list for PBXNativeTarget "OpenHDD" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8339DC4E76F66262C30BA6D7 /* Debug */,
+				CCF9358E7B454C0E2923918E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 248F5415273CBE5ECF01DB8F /* Project object */;
+}
