@@ -208,13 +208,35 @@ static int private_image(const char *path, const struct stat *image)
     return valid;
 }
 
-static int confirm_disk(const char *name, uint64_t size)
+static int display_value(DADiskRef disk, CFStringRef key,
+                         char *output, size_t capacity)
+{
+    CFDictionaryRef description = DADiskCopyDescription(disk);
+    if (!description) return -1;
+    CFStringRef value = CFDictionaryGetValue(description, key);
+    int valid = value && CFGetTypeID(value) == CFStringGetTypeID() &&
+        CFStringGetCString(value, output, capacity, kCFStringEncodingUTF8);
+    CFRelease(description);
+    if (!valid || !output[0]) return -1;
+    for (char *cursor = output; *cursor; ++cursor)
+        if ((unsigned char)*cursor < 32 || (unsigned char)*cursor == 127)
+            *cursor = '?';
+    return 0;
+}
+
+static int confirm_disk(DiskLease *lease, const char *name)
 {
     if (!isatty(STDIN_FILENO)) return -1;
+    char model[256], volume[256];
+    if (display_value(lease->whole, kDADiskDescriptionDeviceModelKey,
+                      model, sizeof(model)) ||
+        display_value(lease->partition, kDADiskDescriptionVolumeNameKey,
+                      volume, sizeof(volume))) return -1;
     fprintf(stderr, "External NTFS partition: %s (%llu bytes).\n"
+            "Device: %s; volume: %s.\n"
             "Only use a disposable drive with a verified backup.\n"
             "Type COPY %s to continue: ",
-            name, (unsigned long long)size, name);
+            name, (unsigned long long)lease->size, model, volume, name);
     char response[64], expected[64];
     snprintf(expected, sizeof(expected), "COPY %s\n", name);
     return fgets(response, sizeof(response), stdin) &&
@@ -285,7 +307,7 @@ static int run_disk(const char *name, const char *source_path,
     had_mount = mounted_path(lease.partition, existing_path,
                              sizeof(existing_path)) == 1;
     lease.whole = DADiskCopyWholeDisk(lease.partition);
-    if (!lease.whole || confirm_disk(name, lease.size)) goto out;
+    if (!lease.whole || confirm_disk(&lease, name)) goto out;
     if (disk_unmount(lease.whole)) {
         fputs("Refused: normal unmount failed; no force used.\n", stderr);
         goto out;
