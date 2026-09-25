@@ -17,6 +17,11 @@ mkfile -n 128m "$image"
 chmod 600 "$image"
 "$build/ntfsprogs/mkntfs" -F -Q -L DirectProbe "$image" > "$fixture/mkntfs.log" 2>&1
 dd if=/dev/urandom of="$source_file" bs=1m count=8 status=none
+if "$root/Build/OpenHDDCopyTest" --disk disk999s1 "$source_file" denied.bin > "$fixture/test-disk.log" 2>&1; then
+  echo 'FAIL: test binary accepted a physical disk' >&2
+  exit 1
+fi
+grep -q 'Test binary accepts private images only' "$fixture/test-disk.log"
 "$root/Build/OpenHDDCopyTest" --image "$image" "$source_file" verified.bin
 "$build/ntfsprogs/ntfscat" "$image" /verified.bin > "$fixture/readback.bin"
 cmp "$source_file" "$fixture/readback.bin"
@@ -124,6 +129,60 @@ fi
 "$build/ntfsprogs/ntfscat" "$after_link" /linked.bin > "$fixture/linked-readback.bin"
 cmp "$source_file" "$fixture/linked-readback.bin"
 
+# Low-level I/O failures at preflight, data write, sync, and final read.
+for fault in pread-1 pwrite-100 sync-1 sync-5 pread-500; do
+  kind=${fault%-*}
+  number=${fault#*-}
+  failed="$fixture/fault-$fault.img"
+  cp "$image" "$failed"
+  case "$kind" in
+    pread) variable=OPENHDD_TEST_FAIL_PREAD_AT ;;
+    pwrite) variable=OPENHDD_TEST_FAIL_PWRITE_AT ;;
+    sync) variable=OPENHDD_TEST_FAIL_SYNC_AT ;;
+  esac
+  if env "$variable=$number" "$root/Build/OpenHDDCopyTest" \
+    --image "$failed" "$source_file" fault.bin > "$fixture/fault-$fault.log" 2>&1; then
+    echo "FAIL: $fault reported success" >&2
+    exit 1
+  fi
+  grep -q 'Copy failed' "$fixture/fault-$fault.log"
+  "$build/ntfsprogs/ntfscat" "$failed" /verified.bin > "$fixture/old-$fault.bin"
+  cmp "$source_file" "$fixture/old-$fault.bin"
+  if "$build/ntfsprogs/ntfscat" "$failed" /fault.bin > "$fixture/new-$fault.bin" 2>/dev/null; then
+    cmp "$source_file" "$fixture/new-$fault.bin"
+  fi
+  before=$(shasum -a 256 "$failed" | awk '{print $1}')
+  "$build/ntfsprogs/ntfsfix" -n "$failed" > "$fixture/check-$fault.log" 2>&1
+  after=$(shasum -a 256 "$failed" | awk '{print $1}')
+  test "$before" = "$after"
+done
+grep -q 'stage 4' "$fixture/fault-sync-5.log"
+grep -q 'stage 5' "$fixture/fault-pread-500.log"
+
+# A source larger than the disposable image must never replace older files.
+full="$fixture/full.img"
+cp "$image" "$full"
+mkfile -n 128m "$fixture/too-large.bin"
+if "$root/Build/OpenHDDCopyTest" --image "$full" "$fixture/too-large.bin" full.bin > "$fixture/full.log" 2>&1; then
+  echo 'FAIL: full image reported success' >&2
+  exit 1
+fi
+if "$build/ntfsprogs/ntfscat" "$full" /full.bin > "$fixture/full-readback.bin" 2>/dev/null; then
+  echo 'FAIL: full image published incomplete file' >&2
+  exit 1
+fi
+"$build/ntfsprogs/ntfscat" "$full" /verified.bin > "$fixture/old-full.bin"
+cmp "$source_file" "$fixture/old-full.bin"
+before=$(shasum -a 256 "$full" | awk '{print $1}')
+"$build/ntfsprogs/ntfsfix" -n "$full" > "$fixture/full-check.log" 2>&1
+if "$root/Build/OpenHDDCopyTest" --image "$full" "$source_file" retry.bin > "$fixture/full-retry.log" 2>&1; then
+  echo 'FAIL: copy accepted unfinished transfer after full image' >&2
+  exit 1
+fi
+grep -q 'Refused: unfinished OpenHDD transfer found' "$fixture/full-retry.log"
+after=$(shasum -a 256 "$full" | awk '{print $1}')
+test "$before" = "$after"
+
 not_ntfs="$fixture/not-ntfs.img"
 mkfile -n 64m "$not_ntfs"
 chmod 600 "$not_ntfs"
@@ -135,5 +194,5 @@ fi
 after=$(shasum -a 256 "$not_ntfs" | awk '{print $1}')
 test "$before" = "$after"
 
-echo 'PASS: fd-bound copy/readback, no overwrite, dirty/non-NTFS reject, no false success under injected failures and process crash'
+echo 'PASS: image copy, crash, I/O faults and disk full; old files intact, no false success'
 echo 'Image tests do not validate power loss, physical-drive consistency or Windows chkdsk.'

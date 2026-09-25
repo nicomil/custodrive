@@ -364,6 +364,12 @@ out:
 
 int main(int argc, char **argv)
 {
+    #ifdef OPENHDD_TESTING
+    if (argc == 5 && !strcmp(argv[1], "--disk")) {
+        fputs("Test binary accepts private images only.\n", stderr);
+        return 2;
+    }
+    #endif
     if (argc != 5 ||
         (strcmp(argv[1], "--image") && strcmp(argv[1], "--disk"))) {
         fputs("Usage: OpenHDDCopy --image PRIVATE_IMAGE SOURCE NEW_NAME\n"

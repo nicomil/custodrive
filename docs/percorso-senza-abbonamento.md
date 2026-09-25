@@ -12,6 +12,8 @@ Per scrivere su NTFS **dal solo Mac, senza abbonamento Apple**, OpenHDD dispone 
 
 L'arresto simulato lascia un file `.OpenHDD-pending-...` incompleto. `ntfsfix -n` non ha segnalato errori nella struttura di base, ma questo non equivale a `chkdsk` né prova la tenuta a perdita di alimentazione. Prima della correzione, il programma accettava un'altra copia sulla stessa immagine. Ora rifiuta nuove scritture se trova un file temporaneo OpenHDD senza il secondo hard link della pubblicazione; non elimina né ripara il residuo automaticamente. Un file temporaneo con due link, lasciato da una copia completata, rimane ammesso.
 
+Il laboratorio della fase 2 inietta errori di lettura, scrittura a blocchi e sync, oltre a simulare disco pieno. Il binario dei test rifiuta `--disk`: può operare solo su immagini private. Nei casi provati nessun errore ha prodotto `PASS` e il file precedente è rimasto leggibile con byte identici. Se il guasto arriva dopo la pubblicazione, il nome nuovo può essere visibile anche se l'operazione segnala errore; la sua persistenza dopo perdita di alimentazione resta ignota. L'errore I/O rimane registrato per tutta l'operazione, così un errore interno eventualmente mascherato dalla libreria non può diventare successo.
+
 ## Requisiti del gestore offline
 
 1. CLI locale con richieste tipizzate, ora disponibile per il collaudo controllato. L'interfaccia grafica per preparare il trasferimento resta da realizzare dopo la prova fisica. I permessi amministrativi sono richiesti per la singola operazione tramite `sudo`; il percorso definitivo di autenticazione deve essere verificato su macOS 15.4 e 27 senza certificato a pagamento.
@@ -24,7 +26,7 @@ L'arresto simulato lascia un file `.OpenHDD-pending-...` incompleto. `ntfsfix -n
 ## Criteri prima di usare la scrittura su dati importanti
 
 - Immagini sacrificabili con file piccoli, grandi, vuoti, Unicode, sparsi e compressi; verifica byte per byte e ispezione delle strutture NTFS da Windows.
-- Iniezione di errori su lettura, scrittura, sincronizzazione, disco pieno, scollegamento e arresto del processo in ogni punto. Nessun falso successo; esito chiaro e possibilità di ripresa senza sovrascrivere l'originale.
+- Iniezione di errori su lettura, scrittura, sincronizzazione, disco pieno, scollegamento e arresto del processo in ogni punto. I primi quattro casi e un arresto dopo il primo blocco sono stati provati su immagini; restano da ampliare i punti d'arresto e da verificare il comportamento su hardware reale. Nessun falso successo; esito chiaro e possibilità di ripresa senza sovrascrivere l'originale.
 - Test su unità USB sacrificabile con backup verificato, quindi controllo `chkdsk` su Windows e hash dopo ogni scenario. Ripetere su M1/macOS 15.4 e su Apple Silicon recente.
 - Mai promettere assenza assoluta di stati inconsistenti durante perdita di alimentazione o scollegamento. Se i test non danno garanzie sufficienti, le scritture NTFS dirette restano disabilitate e si usa Windows.
 

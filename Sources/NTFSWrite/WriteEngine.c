@@ -30,13 +30,43 @@ typedef struct {
     uint64_t size;
     uint64_t position;
     int is_device;
+    int io_failed;
+    #ifdef OPENHDD_TESTING
+    uint64_t read_calls;
+    uint64_t write_calls;
+    uint64_t sync_calls;
+    #endif
 } Target;
+
+#ifdef OPENHDD_TESTING
+static int fail_at(const char *name, uint64_t call)
+{
+    const char *value = getenv(name);
+    if (!value || !*value) return 0;
+    int saved_errno = errno;
+    errno = 0;
+    char *end = NULL;
+    unsigned long long first = strtoull(value, &end, 10);
+    int valid = !errno && end != value && !*end && first > 0;
+    errno = saved_errno;
+    return valid && call >= first;
+}
+#endif
 
 static int durable_sync(Target *target)
 {
-    if (fsync(target->fd)) return -1;
-    if (target->is_device && ioctl(target->fd, DKIOCSYNCHRONIZECACHE))
+    #ifdef OPENHDD_TESTING
+    if (fail_at("OPENHDD_TEST_FAIL_SYNC_AT", ++target->sync_calls)) {
+        target->io_failed = 1;
+        errno = EIO;
         return -1;
+    }
+    #endif
+    if (fsync(target->fd)) { target->io_failed = 1; return -1; }
+    if (target->is_device && ioctl(target->fd, DKIOCSYNCHRONIZECACHE)) {
+        target->io_failed = 1;
+        return -1;
+    }
     return 0;
 }
 
@@ -46,18 +76,37 @@ static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
     if (count < 0 || offset < 0 || count > SSIZE_MAX ||
         (uint64_t)offset > target->size ||
         (uint64_t)count > target->size - (uint64_t)offset) {
+        target->io_failed = 1;
         errno = EINVAL;
         return -1;
     }
     size_t done = 0;
     while (done < (size_t)count) {
+        #ifdef OPENHDD_TESTING
+        if (!writing && fail_at("OPENHDD_TEST_FAIL_PREAD_AT",
+                                ++target->read_calls)) {
+            target->io_failed = 1;
+            errno = EIO;
+            return -1;
+        }
+        if (writing && fail_at("OPENHDD_TEST_FAIL_PWRITE_AT",
+                               ++target->write_calls)) {
+            target->io_failed = 1;
+            errno = EIO;
+            return -1;
+        }
+        #endif
         ssize_t n = writing ?
             pwrite(target->fd, (const char *)data + done,
                    (size_t)count - done, (off_t)offset + (off_t)done) :
             pread(target->fd, (char *)data + done,
                   (size_t)count - done, (off_t)offset + (off_t)done);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { if (n == 0) errno = EIO; return -1; }
+        if (n <= 0) {
+            if (n == 0) errno = EIO;
+            target->io_failed = 1;
+            return -1;
+        }
         done += (size_t)n;
     }
     return count;
@@ -418,8 +467,10 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
     OHNTFSItem item;
     uint32_t warnings = 0;
     int status = readonly_lookup(&target, destination_name, &item, &warnings);
+    if (target.io_failed) return EIO;
     if (status != ENOENT) return status ? status : EEXIST;
     status = readonly_check_unpublished_pending(&target);
+    if (target.io_failed) return EIO;
     if (status) return status;
     char pending[64];
     unsigned char random_bytes[16];
@@ -432,26 +483,30 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
     }
     pending[49] = 0;
     status = readonly_lookup(&target, pending, &item, &warnings);
+    if (target.io_failed) return EIO;
     if (status != ENOENT) return status ? status : EEXIST;
     *failure_stage = 2;
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     if (create_pending(&target, source_fd, &source, pending, digest))
-        return errno ? errno : EIO;
+        return target.io_failed ? EIO : (errno ? errno : EIO);
+    if (target.io_failed) return EIO;
     *failure_stage = 3;
     uint64_t pending_inode = 0, final_inode = 0;
     status = verify_file(&target, pending, (uint64_t)source.st_size,
                          digest, &pending_inode);
-    if (status) return status;
+    if (status || target.io_failed) return status ? status : EIO;
     *failure_stage = 4;
     #ifdef OPENHDD_TESTING
     if (getenv("OPENHDD_TEST_FAIL_BEFORE_PUBLISH")) return EIO;
     #endif
     if (publish(&target, pending, destination_name, pending_inode))
-        return errno ? errno : EIO;
+        return target.io_failed ? EIO : (errno ? errno : EIO);
+    if (target.io_failed) return EIO;
     *failure_stage = 5;
     status = verify_file(&target, destination_name, (uint64_t)source.st_size,
                          digest, &final_inode);
-    if (status || final_inode != pending_inode) return status ? status : EIO;
+    if (status || final_inode != pending_inode || target.io_failed)
+        return status ? status : EIO;
     *failure_stage = 0;
     return 0;
 }

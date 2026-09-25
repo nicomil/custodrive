@@ -51,3 +51,9 @@ Questa prima prova non valida resistenza a scollegamento durante scrittura o per
 - `ntfsfix -n` ha superato i controlli limitati di MFT, mirror e boot sector senza modificare l'immagine. Non è un `chkdsk` completo. Questa prova non simula perdita di alimentazione: macOS può conservare e scaricare la cache dopo la fine del processo.
 - La versione precedente accettava una nuova copia dopo l'arresto. La versione corrente rileva il file temporaneo con un solo hard link e **rifiuta nuove scritture**, lasciando invariato l'hash dell'immagine. Un temporaneo di una copia conclusa ha due hard link e non blocca le copie successive.
 - Nessuna riparazione o cancellazione automatica. La scrittura su dischi con dati importanti resta esclusa finché guasti fisici, spegnimento improvviso e controlli Windows non sono verificati.
+
+## Laboratorio fase 2 — errori su immagini
+
+- `OpenHDDCopyTest` rifiuta ogni richiesta `--disk`. Errori iniettati su lettura, scrittura a blocchi, sincronizzazione e spazio esaurito sono stati provati su immagini NTFS private.
+- Nessun caso ha riportato `PASS`. Il file già presente è rimasto leggibile e identico alla sorgente. Il controllo `ntfsfix -n` non ha segnalato problemi di base; l'hash di ogni immagine è rimasto invariato durante il solo controllo.
+- Un errore dopo la creazione del nome finale può lasciare quel nome visibile pur senza esito di successo. Non interpretare la presenza del file come prova che sia stato sincronizzato sul dispositivo. Mancano ancora guasti USB reali e `chkdsk` Windows sulle immagini dopo ogni scenario.
