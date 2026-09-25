@@ -22,6 +22,14 @@ if "$root/Build/OpenHDDCopyTest" --disk disk999s1 "$source_file" denied.bin > "$
   exit 1
 fi
 grep -q 'Test binary accepts private images only' "$fixture/test-disk.log"
+before=$(shasum -a 256 "$image" | awk '{print $1}')
+if "$root/Build/OpenHDDCopyTest" --image "$image" "$source_file" invalid.bin. > "$fixture/invalid-name.log" 2>&1; then
+  echo 'FAIL: trailing dot accepted in destination name' >&2
+  exit 1
+fi
+grep -q 'invalid new file name. No disk access' "$fixture/invalid-name.log"
+after=$(shasum -a 256 "$image" | awk '{print $1}')
+test "$before" = "$after"
 "$root/Build/OpenHDDCopyTest" --image "$image" "$source_file" verified.bin
 "$build/ntfsprogs/ntfscat" "$image" /verified.bin > "$fixture/readback.bin"
 cmp "$source_file" "$fixture/readback.bin"

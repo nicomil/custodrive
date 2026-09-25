@@ -58,3 +58,8 @@ Questa prima prova non valida resistenza a scollegamento durante scrittura o per
 - Nessun caso ha riportato `PASS`. Il file già presente è rimasto leggibile e identico alla sorgente. Il controllo `ntfsfix -n` non ha segnalato problemi di base; l'hash di ogni immagine è rimasto invariato durante il solo controllo.
 - Se lo spazio libero dichiarato dalla bitmap NTFS è inferiore alla dimensione della sorgente più una riserva, la copia viene rifiutata prima di creare il file temporaneo. Nell'immagine piena di prova l'hash dell'intera immagine è rimasto identico.
 - Un errore dopo la creazione del nome finale può lasciare quel nome visibile pur senza esito di successo. Non interpretare la presenza del file come prova che sia stato sincronizzato sul dispositivo. Mancano ancora guasti USB reali e `chkdsk` Windows sulle immagini dopo ogni scenario.
+
+## Tentativo di prova con sorgente più grande dell'unità
+
+- Il primo comando sulla Kingston è terminato con `stage 0; code 22`: il nome finale digitato aveva un punto in coda. Quindi **non ha esercitato il controllo dello spazio libero**. L'hash dell'intera partizione dopo questo tentativo resta da confrontare con la baseline.
+- Il programma ora rifiuta nomi finali non validi prima di accedere al disco. Test su immagine: nome con punto finale respinto e SHA-256 dell'immagine invariato. La prova fisica dello spazio insufficiente resta da completare.

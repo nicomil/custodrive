@@ -399,6 +399,10 @@ int main(int argc, char **argv)
               stderr);
         return 2;
     }
+    if (!oh_ntfs_valid_new_name(argv[4])) {
+        fputs("Refused: invalid new file name. No disk access.\n", stderr);
+        return 2;
+    }
     if (!strcmp(argv[1], "--image"))
         return run_image(argv[2], argv[3], argv[4]);
     return run_disk(argv[2], argv[3], argv[4]);

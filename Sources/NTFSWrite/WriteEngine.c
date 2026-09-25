@@ -315,8 +315,9 @@ out:
     return status;
 }
 
-static int plain_name(const char *name)
+int oh_ntfs_valid_new_name(const char *name)
 {
+    if (!name) return 0;
     size_t length = strlen(name);
     if (!length || length > 120 || name[0] == '.' ||
         name[length - 1] == '.') return 0;
@@ -461,7 +462,7 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
                      int source_fd, const char *destination_name,
                      int *failure_stage)
 {
-    if (!failure_stage || !destination_name || !plain_name(destination_name) ||
+    if (!failure_stage || !oh_ntfs_valid_new_name(destination_name) ||
         target_size < 4096 || target_size > INT64_MAX) return EINVAL;
     *failure_stage = 1;
     ntfs_log_set_handler(ntfs_log_handler_null);
