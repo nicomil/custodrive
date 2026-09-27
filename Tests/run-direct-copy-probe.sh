@@ -33,11 +33,59 @@ test "$before" = "$after"
 "$root/Build/OpenHDDCopyTest" --image "$image" "$source_file" verified.bin
 "$build/ntfsprogs/ntfscat" "$image" /verified.bin > "$fixture/readback.bin"
 cmp "$source_file" "$fixture/readback.bin"
+make -C "$build/ntfsprogs" ntfsls >/dev/null
+if "$build/ntfsprogs/ntfsls" -l -a -p / "$image" | grep -q '\.OpenHDD-pending-'; then
+  echo 'FAIL: successful copy left an uncertain temporary name' >&2
+  exit 1
+fi
 
 touch "$fixture/empty.bin"
 "$root/Build/OpenHDDCopyTest" --image "$image" "$fixture/empty.bin" empty.bin
 "$build/ntfsprogs/ntfscat" "$image" /empty.bin > "$fixture/empty-readback.bin"
 test ! -s "$fixture/empty-readback.bin"
+
+# File lengths around the copy chunk, including an empty data stream.
+printf x > "$fixture/one.bin"
+printf '\303\251\344\270\255\360\237\214\215\n' > "$fixture/unicode.bin"
+for size in 65535 65536 65537; do
+  mkfile -n "$size" "$fixture/boundary-$size.bin"
+  dd if="$fixture/unicode.bin" of="$fixture/boundary-$size.bin" \
+    conv=notrunc status=none
+done
+for name in one boundary-65535 boundary-65536 boundary-65537; do
+  "$root/Build/OpenHDDCopyTest" --image "$image" "$fixture/$name.bin" "$name.bin"
+  "$build/ntfsprogs/ntfscat" "$image" "/$name.bin" > "$fixture/$name-readback.bin"
+  cmp "$fixture/$name.bin" "$fixture/$name-readback.bin"
+done
+
+# Short system calls must be retried; a short write followed by EIO must fail.
+OPENHDD_TEST_SHORT_PREAD_AT=1 OPENHDD_TEST_SHORT_PWRITE_AT=1 \
+  "$root/Build/OpenHDDCopyTest" --image "$image" \
+  "$fixture/boundary-65537.bin" short-io.bin
+"$build/ntfsprogs/ntfscat" "$image" /short-io.bin > "$fixture/short-io-readback.bin"
+cmp "$fixture/boundary-65537.bin" "$fixture/short-io-readback.bin"
+partial_io="$fixture/partial-io.img"
+cp "$image" "$partial_io"
+if OPENHDD_TEST_SHORT_PWRITE_AT=100 OPENHDD_TEST_FAIL_PWRITE_AT=101 \
+  "$root/Build/OpenHDDCopyTest" --image "$partial_io" \
+  "$source_file" short-then-error.bin > "$fixture/partial-io.log" 2>&1; then
+  echo 'FAIL: short write followed by EIO reported success' >&2
+  exit 1
+fi
+grep -q 'Copy failed' "$fixture/partial-io.log"
+"$build/ntfsprogs/ntfscat" "$partial_io" /verified.bin > "$fixture/partial-old.bin"
+cmp "$source_file" "$fixture/partial-old.bin"
+read_error="$fixture/short-read-error.img"
+cp "$image" "$read_error"
+before=$(shasum -a 256 "$read_error" | awk '{print $1}')
+if OPENHDD_TEST_SHORT_PREAD_AT=1 OPENHDD_TEST_FAIL_PREAD_AT=2 \
+  "$root/Build/OpenHDDCopyTest" --image "$read_error" \
+  "$source_file" short-read-error.bin > "$fixture/short-read-error.log" 2>&1; then
+  echo 'FAIL: short read followed by EIO reported success' >&2
+  exit 1
+fi
+after=$(shasum -a 256 "$read_error" | awk '{print $1}')
+test "$before" = "$after"
 
 before=$(shasum -a 256 "$image" | awk '{print $1}')
 if "$root/Build/OpenHDDCopyTest" --image "$image" "$source_file" verified.bin > "$fixture/duplicate.log" 2>&1; then
@@ -78,7 +126,6 @@ if "$build/ntfsprogs/ntfscat" "$interrupted" /partial.bin > "$fixture/partial-re
 fi
 
 # A process exit skips inode close, unmount and sync; this is not a power-cut test.
-make -C "$build/ntfsprogs" ntfsls >/dev/null
 crashed="$fixture/crashed.img"
 "$build/ntfsprogs/ntfsls" -l -a -p / "$image" | \
   awk '/\.OpenHDD-pending-/ {print $NF}' | sort > "$fixture/pending-before.txt"
@@ -137,6 +184,62 @@ if OPENHDD_TEST_FAIL_AFTER_LINK=1 \
 fi
 "$build/ntfsprogs/ntfscat" "$after_link" /linked.bin > "$fixture/linked-readback.bin"
 cmp "$source_file" "$fixture/linked-readback.bin"
+if "$root/Build/OpenHDDCopyTest" --image "$after_link" \
+  "$fixture/one.bin" retry-after-link.bin > "$fixture/after-link-retry.log" 2>&1; then
+  echo 'FAIL: published but unfinished transfer allowed another write' >&2
+  exit 1
+fi
+grep -q 'Refused: unfinished OpenHDD transfer found' "$fixture/after-link-retry.log"
+
+# Abort at each transaction boundary. A committed copy has no pending name;
+# earlier aborts leave a pending name and block another write.
+for boundary in 2 3 4 5 0; do
+  phase_image="$fixture/abort-$boundary.img"
+  cp "$image" "$phase_image"
+  before=$(shasum -a 256 "$phase_image" | awk '{print $1}')
+  set +e
+  OPENHDD_TEST_ABORT_AT_STAGE="$boundary" \
+    "$root/Build/OpenHDDCopyTest" --image "$phase_image" \
+    "$fixture/boundary-65537.bin" "aborted-$boundary.bin" \
+    > "$fixture/abort-$boundary.log" 2>&1
+  abort_code=$?
+  set -e
+  test "$abort_code" -eq 86
+  "$build/ntfsprogs/ntfscat" "$phase_image" /verified.bin > "$fixture/old-$boundary.bin"
+  cmp "$source_file" "$fixture/old-$boundary.bin"
+  if [ "$boundary" -eq 2 ]; then
+    after=$(shasum -a 256 "$phase_image" | awk '{print $1}')
+    test "$before" = "$after"
+    continue
+  fi
+  if [ "$boundary" -eq 5 ] || [ "$boundary" -eq 0 ]; then
+    "$build/ntfsprogs/ntfscat" "$phase_image" "/aborted-$boundary.bin" \
+      > "$fixture/aborted-$boundary-readback.bin"
+    cmp "$fixture/boundary-65537.bin" "$fixture/aborted-$boundary-readback.bin"
+  elif "$build/ntfsprogs/ntfscat" "$phase_image" "/aborted-$boundary.bin" \
+    > "$fixture/aborted-$boundary-readback.bin" 2>/dev/null; then
+    echo "FAIL: stage $boundary published incomplete file" >&2
+    exit 1
+  fi
+  if [ "$boundary" -ne 0 ]; then
+    if "$root/Build/OpenHDDCopyTest" --image "$phase_image" \
+      "$fixture/one.bin" "retry-$boundary.bin" \
+      > "$fixture/retry-$boundary.log" 2>&1; then
+      echo "FAIL: stage $boundary allowed another write" >&2
+      exit 1
+    fi
+    grep -q 'Refused: unfinished OpenHDD transfer found' \
+      "$fixture/retry-$boundary.log"
+  elif "$build/ntfsprogs/ntfsls" -l -a -p / "$phase_image" | \
+       grep -q '\.OpenHDD-pending-'; then
+    echo 'FAIL: fully committed copy left a temporary name' >&2
+    exit 1
+  fi
+  before=$(shasum -a 256 "$phase_image" | awk '{print $1}')
+  "$build/ntfsprogs/ntfsfix" -n "$phase_image" > "$fixture/abort-check-$boundary.log" 2>&1
+  after=$(shasum -a 256 "$phase_image" | awk '{print $1}')
+  test "$before" = "$after"
+done
 
 # Low-level I/O failures at preflight, data write, sync, and final read.
 for fault in pread-1 pwrite-100 nospace-100 sync-1 sync-5 pread-500; do
@@ -200,5 +303,5 @@ fi
 after=$(shasum -a 256 "$not_ntfs" | awk '{print $1}')
 test "$before" = "$after"
 
-echo 'PASS: image copy, crash, I/O faults and disk full; old files intact, no false success'
+echo 'PASS: image boundaries, partial I/O, crash phases, faults and disk full; old files intact, no false success'
 echo 'Image tests do not validate power loss, physical-drive consistency or Windows chkdsk.'

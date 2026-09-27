@@ -294,7 +294,7 @@ out:
         fputs("Image close failed; no success reported.\n", stderr);
         result = 1;
     }
-    if (!result) puts("PASS: image copy verified; pending hard link remains.");
+    if (!result) puts("PASS: image copy verified and temporary name removed.");
     return result;
 }
 
@@ -400,8 +400,7 @@ out:
         else
             fputs("Previous read-only mount restored.\n", stderr);
     }
-    if (!result) puts("PASS: copied, independently verified and ejected. "
-                      "Pending hard link remains.");
+    if (!result) puts("PASS: copied, independently verified and ejected.");
     else fputs("NO SUCCESS: drive may need Windows chkdsk.\n", stderr);
     lease_close(&lease);
     return result;

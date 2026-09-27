@@ -51,6 +51,18 @@ static int fail_at(const char *name, uint64_t call)
     errno = saved_errno;
     return valid && call >= first;
 }
+
+static int short_at(const char *name, uint64_t call)
+{
+    return fail_at(name, call) && !fail_at(name, call - 1);
+}
+
+static void abort_at_stage(int stage)
+{
+    const char *requested = getenv("OPENHDD_TEST_ABORT_AT_STAGE");
+    if (requested && requested[0] == '0' + stage && !requested[1])
+        _exit(86);
+}
 #endif
 
 static int durable_sync(Target *target)
@@ -101,11 +113,18 @@ static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
             }
         }
         #endif
+        size_t request = (size_t)count - done;
+        #ifdef OPENHDD_TESTING
+        if (request > 1 && short_at(writing ? "OPENHDD_TEST_SHORT_PWRITE_AT" :
+                                   "OPENHDD_TEST_SHORT_PREAD_AT",
+                                   writing ? target->write_calls : target->read_calls))
+            request /= 2;
+        #endif
         ssize_t n = writing ?
             pwrite(target->fd, (const char *)data + done,
-                   (size_t)count - done, (off_t)offset + (off_t)done) :
+                   request, (off_t)offset + (off_t)done) :
             pread(target->fd, (char *)data + done,
-                  (size_t)count - done, (off_t)offset + (off_t)done);
+                  request, (off_t)offset + (off_t)done);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) {
             if (n == 0) errno = EIO;
@@ -254,18 +273,16 @@ static int readonly_lookup(Target *target, const char *name,
     return status;
 }
 
-static int check_unpublished_pending_entry(void *opaque, const char *name,
-                                           const OHNTFSItem *item)
+static int check_pending_entry(void *opaque, const char *name,
+                               const OHNTFSItem *item)
 {
-    (void)opaque;
-    if (!strncmp(name, ".OpenHDD-pending-", 17) &&
-        (item->kind != 1 || item->hard_link_count < 2)) return EINPROGRESS;
+    (void)opaque; (void)item;
+    if (!strncmp(name, ".OpenHDD-pending-", 17)) return EINPROGRESS;
     return 0;
 }
 
-static int readonly_check_unpublished_pending(Target *target,
-                                              uint64_t *free_bytes,
-                                              uint32_t *warning_bits)
+static int readonly_check_pending(Target *target, uint64_t *free_bytes,
+                                  uint32_t *warning_bits)
 {
     OHNTFSVolume *volume = NULL;
     uint32_t warnings = 0;
@@ -274,8 +291,7 @@ static int readonly_check_unpublished_pending(Target *target,
     *warning_bits = warnings;
     if (status) return status;
     status = warnings ? EBUSY : oh_ntfs_list(volume, FILE_root,
-                                            check_unpublished_pending_entry,
-                                            NULL);
+                                            check_pending_entry, NULL);
     if (!status) status = oh_ntfs_free_bytes(volume, free_bytes);
     oh_ntfs_close(volume);
     return status;
@@ -284,8 +300,7 @@ static int readonly_check_unpublished_pending(Target *target,
 static int safety_preflight(Target *target, uint64_t *free_bytes,
                             uint32_t *warnings)
 {
-    int status = readonly_check_unpublished_pending(target, free_bytes,
-                                                     warnings);
+    int status = readonly_check_pending(target, free_bytes, warnings);
     return target->io_failed ? EIO : status;
 }
 
@@ -486,6 +501,47 @@ out:
     return result;
 }
 
+/* Remove only the temporary name after the final name has been verified.
+   Any failure before this point leaves a pending entry that blocks new writes. */
+static int complete_pending(Target *target, const char *pending,
+                            const char *final_name, uint64_t expected_inode)
+{
+    ntfs_volume *volume = mount_rw(target);
+    ntfs_inode *root = NULL, *temporary = NULL, *final = NULL;
+    ntfschar *wide = NULL;
+    int result = -1;
+    if (!volume) return -1;
+    root = ntfs_inode_open(volume, FILE_root);
+    if (!root) goto out;
+    temporary = ntfs_pathname_to_inode(volume, NULL, pending);
+    final = ntfs_pathname_to_inode(volume, NULL, final_name);
+    if (!temporary || !final || temporary->mft_no != expected_inode ||
+        final->mft_no != expected_inode ||
+        le16_to_cpu(temporary->mrec->link_count) != 2) {
+        errno = EIO;
+        goto out;
+    }
+    if (ntfs_inode_close(final)) { final = NULL; goto out; }
+    final = NULL;
+    int count = ntfs_mbstoucs(pending, &wide);
+    if (count <= 0 || count > 255) goto out;
+    ntfs_inode *entry = temporary;
+    ntfs_inode *directory = root;
+    temporary = NULL;
+    root = NULL;
+    if (ntfs_delete(volume, pending, entry, directory, wide, (u8)count))
+        goto out;
+    result = 0;
+out:
+    free(wide);
+    if (final && ntfs_inode_close(final)) result = -1;
+    if (temporary && ntfs_inode_close(temporary)) result = -1;
+    if (root && ntfs_inode_close(root)) result = -1;
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    return result;
+}
+
 int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
                      int source_fd, const char *destination_name,
                      int *failure_stage, uint32_t *safety_warnings)
@@ -529,16 +585,25 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
     if (target.io_failed) return EIO;
     if (status != ENOENT) return status ? status : EEXIST;
     *failure_stage = 2;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(2);
+    #endif
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     if (create_pending(&target, source_fd, &source, pending, digest))
         return target.io_failed ? EIO : (errno ? errno : EIO);
     if (target.io_failed) return EIO;
     *failure_stage = 3;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(3);
+    #endif
     uint64_t pending_inode = 0, final_inode = 0;
     status = verify_file(&target, pending, (uint64_t)source.st_size,
                          digest, &pending_inode);
     if (status || target.io_failed) return status ? status : EIO;
     *failure_stage = 4;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(4);
+    #endif
     #ifdef OPENHDD_TESTING
     if (getenv("OPENHDD_TEST_FAIL_BEFORE_PUBLISH")) return EIO;
     #endif
@@ -546,10 +611,26 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
         return target.io_failed ? EIO : (errno ? errno : EIO);
     if (target.io_failed) return EIO;
     *failure_stage = 5;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(5);
+    #endif
+    status = verify_file(&target, destination_name, (uint64_t)source.st_size,
+                         digest, &final_inode);
+    if (status || final_inode != pending_inode || target.io_failed)
+        return status ? status : EIO;
+    if (complete_pending(&target, pending, destination_name, final_inode))
+        return target.io_failed ? EIO : (errno ? errno : EIO);
+    if (target.io_failed) return EIO;
+    status = readonly_lookup(&target, pending, &item, &warnings);
+    if (status != ENOENT || target.io_failed)
+        return target.io_failed ? EIO : (status ? status : EIO);
     status = verify_file(&target, destination_name, (uint64_t)source.st_size,
                          digest, &final_inode);
     if (status || final_inode != pending_inode || target.io_failed)
         return status ? status : EIO;
     *failure_stage = 0;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(0);
+    #endif
     return 0;
 }
