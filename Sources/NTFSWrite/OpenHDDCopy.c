@@ -332,6 +332,7 @@ static int confirm_disk(DiskLease *lease, const char *name)
                       volume, sizeof(volume))) return -1;
     fprintf(stderr, "External NTFS partition: %s (%llu bytes).\n"
             "Device: %s; volume: %s.\n"
+            "EXPERIMENTAL: a disconnected test drive developed NTFS bitmap errors.\n"
             "Only use a disposable drive with a verified backup.\n"
             "Type COPY %s to continue: ",
             name, (unsigned long long)lease->size, model, volume, name);
