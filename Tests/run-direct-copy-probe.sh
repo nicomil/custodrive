@@ -16,6 +16,19 @@ source_file="$fixture/source.bin"
 mkfile -n 128m "$image"
 chmod 600 "$image"
 "$build/ntfsprogs/mkntfs" -F -Q -L DirectProbe "$image" > "$fixture/mkntfs.log" 2>&1
+mkdir -m 700 "$fixture/quarantine"
+cc -std=c11 -O2 -arch arm64 -mmacosx-version-min=15.4 -Wall -Wextra -Werror \
+  -I "$root/Sources/NTFSBridge/include" \
+  -I "$root/Sources/NTFSWrite" \
+  -I "$root/vendor/ntfs-3g-2026.7.7/include" \
+  -I "$root/Build/ntfs3g" \
+  "$root/Sources/NTFSBridge/OpenHDDNTFS.c" \
+  "$root/Sources/NTFSWrite/WriteEngine.c" \
+  "$root/Tests/quarantine_probe.c" \
+  "$root/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a" \
+  -framework CoreFoundation -framework DiskArbitration -framework IOKit \
+  -o "$fixture/quarantine-probe"
+"$fixture/quarantine-probe" "$image" "$fixture/quarantine"
 dd if=/dev/urandom of="$source_file" bs=1m count=8 status=none
 if "$root/Build/OpenHDDCopyTest" --disk disk999s1 "$source_file" denied.bin > "$fixture/test-disk.log" 2>&1; then
   echo 'FAIL: test binary accepted a physical disk' >&2

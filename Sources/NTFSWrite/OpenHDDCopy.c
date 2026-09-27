@@ -17,6 +17,89 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* A local marker survives process death even if NTFS lost its pending name
+   during the last metadata sync. It is cleared only after normal eject. */
+static const char *quarantine_path = "/private/var/db/openhdd";
+
+static int quarantine_name(int device, uint64_t size, char *name, size_t length)
+{
+    unsigned char boot[512];
+    if (pread(device, boot, sizeof(boot), 0) != sizeof(boot) ||
+        memcmp(boot + 3, "NTFS    ", 8) ||
+        boot[510] != 0x55 || boot[511] != 0xaa) return -1;
+    uint64_t serial = 0;
+    for (size_t i = 0; i < 8; ++i)
+        serial |= (uint64_t)boot[0x48 + i] << (i * 8);
+    if (!serial || snprintf(name, length, "%016llx-%llu.pending",
+        (unsigned long long)serial, (unsigned long long)size) >= (int)length)
+        return -1;
+    return 0;
+}
+
+static int quarantine_directory(int create)
+{
+    int made_directory = 0;
+    if (create && !mkdir(quarantine_path, 0700)) made_directory = 1;
+    else if (create && errno != EEXIST) return -1;
+    int directory = open(quarantine_path,
+                         O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat state;
+    if (directory < 0) return -1;
+    if (fstat(directory, &state) || !S_ISDIR(state.st_mode) ||
+        state.st_uid != geteuid() || (state.st_mode & 077)) {
+        close(directory);
+        errno = EPERM;
+        return -1;
+    }
+    if (made_directory) {
+        int parent = open("/private/var/db",
+                          O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int synced = parent >= 0 && !fsync(parent);
+        if (parent >= 0) close(parent);
+        if (!synced) {
+            close(directory);
+            errno = EIO;
+            return -1;
+        }
+    }
+    return directory;
+}
+
+static int quarantine_status(int device, uint64_t size)
+{
+    char name[80];
+    if (quarantine_name(device, size, name, sizeof(name))) return -1;
+    int directory = quarantine_directory(0);
+    if (directory < 0) return errno == ENOENT ? 0 : -1;
+    struct stat state;
+    int exists = fstatat(directory, name, &state, AT_SYMLINK_NOFOLLOW) == 0;
+    int saved_errno = errno;
+    close(directory);
+    if (!exists && saved_errno != ENOENT) return -1;
+    return exists;
+}
+
+static int quarantine_begin(int device, uint64_t size, int *directory,
+                            char *name, size_t length)
+{
+    if (quarantine_name(device, size, name, length)) return EINVAL;
+    *directory = quarantine_directory(1);
+    if (*directory < 0) return errno ? errno : EIO;
+    int marker = openat(*directory, name,
+                        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                        0600);
+    if (marker < 0) return errno == EEXIST ? EINPROGRESS : (errno ? errno : EIO);
+    int result = fsync(marker);
+    if (close(marker)) result = -1;
+    if (fsync(*directory)) result = -1;
+    return result ? EIO : 0;
+}
+
+static int quarantine_clear(int directory, const char *name)
+{
+    return unlinkat(directory, name, 0) || fsync(directory) ? -1 : 0;
+}
+
 typedef struct {
     DASessionRef session;
     DADiskRef partition;
@@ -311,6 +394,8 @@ static int run_disk(const char *name, const char *source_path,
         return 1;
     }
     int result = 1, stage = 0, target = -1, source = -1;
+    int quarantine_dir = -1, quarantine_active = 0;
+    char quarantine_file[80] = {0};
     uint32_t warnings = 0;
     int had_mount = 0, unmounted = 0;
     DiskLease lease = {0};
@@ -354,9 +439,24 @@ static int run_disk(const char *name, const char *source_path,
         fputs("Refused: device access, geometry or identity failed.\n", stderr);
         goto out;
     }
+    int marker_status = quarantine_begin(target, lease.size, &quarantine_dir,
+                                         quarantine_file,
+                                         sizeof(quarantine_file));
+    if (marker_status) {
+        if (marker_status == EINPROGRESS)
+            fputs("Refused: previous OpenHDD transfer unresolved on this Mac. "
+                  "Check the volume on Windows before another write.\n", stderr);
+        else
+            fputs("Refused: local safety marker could not be secured. "
+                  "No NTFS write started.\n", stderr);
+        goto out;
+    }
+    quarantine_active = 1;
     int code = oh_copy_new_file(target, lease.size, 1,
                                 source, file_name, &stage, &warnings);
     if (code) {
+        if (stage == 1 && !quarantine_clear(quarantine_dir, quarantine_file))
+            quarantine_active = 0; /* preflight never enters RW mount */
         if (code == EINPROGRESS)
             fputs("Refused: unfinished OpenHDD transfer found. "
                   "Check volume on Windows; no new copy started.\n", stderr);
@@ -400,6 +500,14 @@ out:
         else
             fputs("Previous read-only mount restored.\n", stderr);
     }
+    if (!result && quarantine_active) {
+        if (quarantine_clear(quarantine_dir, quarantine_file)) {
+            fputs("Eject succeeded, but local safety marker remains uncertain.\n",
+                  stderr);
+            result = 1;
+        } else quarantine_active = 0;
+    }
+    if (quarantine_dir >= 0) close(quarantine_dir);
     if (!result) puts("PASS: copied, independently verified and ejected.");
     else fputs("NO SUCCESS: drive may need Windows chkdsk.\n", stderr);
     lease_close(&lease);
@@ -481,6 +589,14 @@ static int run_check_disk(const char *name)
     }
     if (inspect_partition(&lease, name, 1)) {
         fputs("Read-only partition identity changed during check.\n", stderr);
+        goto out;
+    }
+    int marker_status = quarantine_status(target, lease.size);
+    if (marker_status) {
+        fputs(marker_status > 0 ?
+              "Read-only check found an unresolved local OpenHDD transfer.\n" :
+              "Read-only check could not inspect the local safety marker.\n",
+              stderr);
         goto out;
     }
     int code = oh_ntfs_safety_preflight(target, lease.size, &free_bytes,
