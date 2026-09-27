@@ -264,12 +264,14 @@ static int check_unpublished_pending_entry(void *opaque, const char *name,
 }
 
 static int readonly_check_unpublished_pending(Target *target,
-                                              uint64_t *free_bytes)
+                                              uint64_t *free_bytes,
+                                              uint32_t *warning_bits)
 {
     OHNTFSVolume *volume = NULL;
     uint32_t warnings = 0;
     int status = oh_ntfs_open(read_target, target, target->size,
                               &volume, &warnings);
+    *warning_bits = warnings;
     if (status) return status;
     status = warnings ? EBUSY : oh_ntfs_list(volume, FILE_root,
                                             check_unpublished_pending_entry,
@@ -277,6 +279,25 @@ static int readonly_check_unpublished_pending(Target *target,
     if (!status) status = oh_ntfs_free_bytes(volume, free_bytes);
     oh_ntfs_close(volume);
     return status;
+}
+
+static int safety_preflight(Target *target, uint64_t *free_bytes,
+                            uint32_t *warnings)
+{
+    int status = readonly_check_unpublished_pending(target, free_bytes,
+                                                     warnings);
+    return target->io_failed ? EIO : status;
+}
+
+int oh_ntfs_safety_preflight(int target_fd, uint64_t target_size,
+                             uint64_t *free_bytes, uint32_t *warnings)
+{
+    if (target_fd < 0 || target_size < 4096 || target_size > INT64_MAX ||
+        !free_bytes || !warnings) return EINVAL;
+    Target target = { .fd = target_fd, .size = target_size };
+    *free_bytes = 0;
+    *warnings = 0;
+    return safety_preflight(&target, free_bytes, warnings);
 }
 
 static int verify_file(Target *target, const char *name, uint64_t size,
@@ -306,6 +327,13 @@ static int verify_file(Target *target, const char *name, uint64_t size,
             goto out;
         }
         offset += amount;
+    }
+    if (!size) {
+        unsigned char probe;
+        if (oh_ntfs_read(volume, item.inode, 0, &probe, 1) != 0) {
+            status = EIO;
+            goto out;
+        }
     }
     if (!CC_SHA256_Final(actual, &context) ||
         memcmp(actual, digest, sizeof(actual))) status = EIO;
@@ -460,11 +488,13 @@ out:
 
 int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
                      int source_fd, const char *destination_name,
-                     int *failure_stage)
+                     int *failure_stage, uint32_t *safety_warnings)
 {
-    if (!failure_stage || !oh_ntfs_valid_new_name(destination_name) ||
+    if (!failure_stage || !safety_warnings ||
+        !oh_ntfs_valid_new_name(destination_name) ||
         target_size < 4096 || target_size > INT64_MAX) return EINVAL;
     *failure_stage = 1;
+    *safety_warnings = 0;
     ntfs_log_set_handler(ntfs_log_handler_null);
     struct stat source;
     if (fstat(source_fd, &source) || !S_ISREG(source.st_mode) ||
@@ -475,11 +505,12 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
     OHNTFSItem item;
     uint32_t warnings = 0;
     int status = readonly_lookup(&target, destination_name, &item, &warnings);
+    *safety_warnings |= warnings;
     if (target.io_failed) return EIO;
     if (status != ENOENT) return status ? status : EEXIST;
     uint64_t free_bytes = 0;
-    status = readonly_check_unpublished_pending(&target, &free_bytes);
-    if (target.io_failed) return EIO;
+    status = safety_preflight(&target, &free_bytes, &warnings);
+    *safety_warnings |= warnings;
     if (status) return status;
     uint64_t reserve = (uint64_t)source.st_size / 100;
     if (reserve < 16 * 1024 * 1024) reserve = 16 * 1024 * 1024;

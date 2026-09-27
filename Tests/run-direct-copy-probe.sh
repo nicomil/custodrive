@@ -61,6 +61,7 @@ if "$root/Build/OpenHDDCopyTest" --image "$dirty" "$source_file" dirty.bin > "$f
   echo 'FAIL: dirty volume accepted' >&2
   exit 1
 fi
+grep -q 'NTFS safety preflight refused: dirty volume;' "$fixture/dirty.log"
 after=$(shasum -a 256 "$dirty" | awk '{print $1}')
 test "$before" = "$after"
 

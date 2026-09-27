@@ -1,4 +1,5 @@
 #include "WriteEngine.h"
+#include "OpenHDDNTFS.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
@@ -55,6 +56,20 @@ static DADissenterRef deny_release(DADiskRef disk, void *opaque)
     (void)disk; (void)opaque;
     return DADissenterCreate(kCFAllocatorDefault, kDAReturnExclusiveAccess,
                              CFSTR("OpenHDD transfer in progress"));
+}
+
+static void print_safety_warnings(uint32_t warnings)
+{
+    if (!warnings) return;
+    fputs("NTFS safety preflight refused: ", stderr);
+    if (warnings & OH_NTFS_WARNING_DIRTY) fputs("dirty volume; ", stderr);
+    if (warnings & OH_NTFS_WARNING_HIBERNATED_OR_UNCERTAIN)
+        fputs("hibernation state uncertain; ", stderr);
+    if (warnings & OH_NTFS_WARNING_JOURNAL_SUSPECT)
+        fputs("journal state suspect; ", stderr);
+    if (warnings & OH_NTFS_WARNING_TXF_REWRITE_RISK)
+        fputs("$TXF_DATA rewrite risk; ", stderr);
+    fputs("no writes started.\n", stderr);
 }
 
 static int wait_request(DiskRequest *request)
@@ -248,6 +263,7 @@ static int run_image(const char *path, const char *source_path,
 {
     struct stat before, after, source_info;
     int result = 1, stage = 0;
+    uint32_t warnings = 0;
     if (lstat(path, &before) || !private_image(path, &before)) {
         fputs("Refused: target must be a private regular image.\n", stderr);
         return 1;
@@ -264,13 +280,14 @@ static int run_image(const char *path, const char *source_path,
         goto out;
     }
     int code = oh_copy_new_file(target, (uint64_t)after.st_size, 0,
-                                source, name, &stage);
+                                source, name, &stage, &warnings);
     if (code == EINPROGRESS)
         fputs("Refused: unfinished OpenHDD transfer found. Inspect image.\n", stderr);
-    else if (code)
+    else if (code) {
+        print_safety_warnings(warnings);
         fprintf(stderr, "Copy failed at stage %d; code %d. Inspect image.\n",
                 stage, code);
-    else result = 0;
+    } else result = 0;
 out:
     if (source >= 0) close(source);
     if (target >= 0 && close(target)) {
@@ -294,6 +311,7 @@ static int run_disk(const char *name, const char *source_path,
         return 1;
     }
     int result = 1, stage = 0, target = -1, source = -1;
+    uint32_t warnings = 0;
     int had_mount = 0, unmounted = 0;
     DiskLease lease = {0};
     lease.session = DASessionCreate(kCFAllocatorDefault);
@@ -337,15 +355,20 @@ static int run_disk(const char *name, const char *source_path,
         goto out;
     }
     int code = oh_copy_new_file(target, lease.size, 1,
-                                source, file_name, &stage);
+                                source, file_name, &stage, &warnings);
     if (code) {
         if (code == EINPROGRESS)
             fputs("Refused: unfinished OpenHDD transfer found. "
                   "Check volume on Windows; no new copy started.\n", stderr);
-        else
+        else {
+            print_safety_warnings(warnings);
+            if (!warnings && stage == 1 && code == EBUSY)
+                fputs("Preflight refused: volume busy or safety state uncertain; "
+                      "no writes started.\n", stderr);
             fprintf(stderr, "Copy failed at stage %d; code %d. "
                             "Do not trust destination; check with Windows.\n",
                     stage, code);
+        }
         goto out;
     }
     if (inspect_partition(&lease, name, 1)) {
@@ -384,8 +407,125 @@ out:
     return result;
 }
 
+static int run_check_disk(const char *name)
+{
+    if (geteuid() != 0 || !partition_name(name)) {
+        fputs("Refused: run read-only check with sudo and a partition name.\n",
+              stderr);
+        return 1;
+    }
+    int result = 1, target = -1, unmounted = 0;
+    DiskLease lease = {0};
+    lease.session = DASessionCreate(kCFAllocatorDefault);
+    if (!lease.session) goto out;
+    DASessionScheduleWithRunLoop(lease.session, CFRunLoopGetCurrent(),
+                                 kCFRunLoopDefaultMode);
+    lease.partition = DADiskCreateFromBSDName(kCFAllocatorDefault,
+                                               lease.session, name);
+    if (!lease.partition || inspect_partition(&lease, name, 0)) {
+        fputs("Refused: target is not an external NTFS partition.\n", stderr);
+        goto out;
+    }
+    char path[1024];
+    struct statfs mounted_state;
+    if (mounted_path(lease.partition, path, sizeof(path)) != 1 ||
+        statfs(path, &mounted_state) || !(mounted_state.f_flags & MNT_RDONLY)) {
+        fputs("Refused: mount NTFS read-only before checking.\n", stderr);
+        goto out;
+    }
+    lease.whole = DADiskCopyWholeDisk(lease.partition);
+    if (!lease.whole || disk_unmount(lease.whole)) {
+        fputs("Read-only check stopped: normal unmount failed; no force used.\n",
+              stderr);
+        goto out;
+    }
+    unmounted = 1;
+    if (inspect_partition(&lease, name, 1)) {
+        fputs("Read-only check stopped: partition identity changed after unmount.\n",
+              stderr);
+        goto out;
+    }
+    char device_path[64];
+    snprintf(device_path, sizeof(device_path), "/dev/%s", name);
+    target = open(device_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (target < 0) {
+        perror("Read-only device open failed");
+        goto out;
+    }
+    struct stat target_info;
+    uint32_t block_size = 0;
+    uint64_t block_count = 0, free_bytes = 0;
+    uint32_t warnings = 0;
+    if (fstat(target, &target_info)) {
+        perror("Read-only device stat failed");
+        goto out;
+    }
+    if (!S_ISBLK(target_info.st_mode)) {
+        fputs("Read-only target is not a block device.\n", stderr);
+        goto out;
+    }
+    if (ioctl(target, DKIOCGETBLOCKSIZE, &block_size)) {
+        perror("Read-only block-size query failed");
+        goto out;
+    }
+    if (ioctl(target, DKIOCGETBLOCKCOUNT, &block_count)) {
+        perror("Read-only block-count query failed");
+        goto out;
+    }
+    if (block_size < 512 || block_size > 65536 ||
+        block_count != lease.size / block_size || lease.size % block_size) {
+        fprintf(stderr, "Read-only geometry mismatch: block size %u, "
+                "count %llu, expected bytes %llu.\n", block_size,
+                (unsigned long long)block_count,
+                (unsigned long long)lease.size);
+        goto out;
+    }
+    if (inspect_partition(&lease, name, 1)) {
+        fputs("Read-only partition identity changed during check.\n", stderr);
+        goto out;
+    }
+    int code = oh_ntfs_safety_preflight(target, lease.size, &free_bytes,
+                                        &warnings);
+    if (!code && inspect_partition(&lease, name, 1)) code = EIO;
+    if (code) {
+        print_safety_warnings(warnings);
+        if (code == EINPROGRESS)
+            fputs("Read-only check found unfinished OpenHDD transfer.\n", stderr);
+        else if (!warnings && code == EBUSY)
+            fputs("Read-only check inconclusive: volume busy or state uncertain.\n",
+                  stderr);
+        else if (!warnings)
+            fprintf(stderr, "Read-only check failed; code %d.\n", code);
+    } else {
+        printf("Read-only NTFS safety preflight passed; %llu bytes free. "
+               "No writes attempted.\n", (unsigned long long)free_bytes);
+        result = 0;
+    }
+out:
+    if (target >= 0 && close(target)) {
+        fputs("Read-only device close failed.\n", stderr);
+        result = 1;
+    }
+    if (unmounted && inspect_partition(&lease, name, 1) == 0) {
+        if (restore_read_only(lease.partition)) {
+            fputs("Read-only check finished, but read-only mount restore failed.\n",
+                  stderr);
+            result = 1;
+        } else {
+            fputs("NTFS restored as read-only.\n", stderr);
+        }
+    } else if (unmounted) {
+        fputs("Device changed; automatic remount skipped.\n", stderr);
+        result = 1;
+    }
+    lease_close(&lease);
+    return result;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--check-disk"))
+        return run_check_disk(argv[2]);
     #ifdef OPENHDD_TESTING
     if (argc == 5 && !strcmp(argv[1], "--disk")) {
         fputs("Test binary accepts private images only.\n", stderr);
@@ -394,7 +534,8 @@ int main(int argc, char **argv)
     #endif
     if (argc != 5 ||
         (strcmp(argv[1], "--image") && strcmp(argv[1], "--disk"))) {
-        fputs("Usage: OpenHDDCopy --image PRIVATE_IMAGE SOURCE NEW_NAME\n"
+        fputs("Usage: sudo OpenHDDCopy --check-disk diskXsY\n"
+              "       OpenHDDCopy --image PRIVATE_IMAGE SOURCE NEW_NAME\n"
               "       sudo OpenHDDCopy --disk diskXsY SOURCE NEW_NAME\n",
               stderr);
         return 2;
