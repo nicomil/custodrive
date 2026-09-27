@@ -112,4 +112,24 @@ Questa prima prova non valida resistenza a scollegamento durante scrittura o per
 ## Prima copia della versione aggiornata — file vuoto
 
 - Sulla sola USB sacrificabile `USB DISK 2.0`, `disk4s1`, il comando per `OpenHDD-v2-empty.bin` ha riportato `PASS: copied, independently verified and ejected.` secondo l'utente. Dopo reinserimento, macOS ha montato `OPENHDDLAB` in sola lettura; il file misura zero byte, ha SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` e la radice non contiene nomi `.OpenHDD-pending-...`. Espulsione normale riuscita.
-- Il controllo Windows di struttura e hash è ancora da acquisire. Questo singolo esito non valida il comportamento con file grandi, errori del dispositivo o perdita di alimentazione.
+- L'utente riferisce `chkdsk X:` senza problemi e hash PowerShell identico all'atteso dopo reinserimento su Windows. Output completo non acquisito. Questo singolo esito non valida il comportamento con file grandi, errori del dispositivo o perdita di alimentazione.
+
+## Seconda copia della versione aggiornata — 1 byte
+
+- La USB corretta è stata ricollegata al Mac; file vuoto e mount read-only erano ancora integri. Il comando per `OpenHDD-v2-one-byte.bin` ha riportato `PASS: copied, independently verified and ejected.` secondo l'utente.
+- Dopo reinserimento, macOS vede ancora `OPENHDDLAB` NTFS in sola lettura. Il nuovo file misura 1 byte e ha SHA-256 `2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881`; il file vuoto conserva l'hash atteso. Nessun temporaneo OpenHDD nella radice. Espulsione normale riuscita. L'utente riferisce `chkdsk X:` regolare e hash PowerShell corrispondenti per entrambi i file su Windows; output completo non acquisito.
+
+## Terza copia della versione aggiornata — contenuto Unicode
+
+- Sulla stessa USB sacrificabile, il comando per `OpenHDD-v2-unicode.txt` ha riportato `PASS: copied, independently verified and ejected.` secondo l'utente. La sorgente contiene testo UTF-8 e misura 65 byte; il nome di destinazione resta ASCII come richiesto dal motore attuale.
+- Dopo reinserimento, macOS ha letto il nuovo file in sola lettura: 65 byte, SHA-256 `85df5f6f0236a4bffdc1d1d06786a688fcbc6d696a28f56879c0160fb4eaf2cd`, identico alla sorgente. File da 0 e 1 byte conservano gli hash attesi; nessun temporaneo OpenHDD nella radice. Espulsione normale riuscita. L'utente riferisce `chkdsk X:` regolare e hash PowerShell del nuovo file identico su Windows; output completo non acquisito.
+
+## Quarta copia della versione aggiornata — 8 MiB
+
+- Il comando per `OpenHDD-v2-8MiB.bin` sulla stessa USB sacrificabile ha riportato `PASS: copied, independently verified and ejected.` secondo l'utente.
+- Dopo reinserimento, macOS legge il file da 8.388.608 byte con SHA-256 `69f4a57d6d6c0d87ebec0c9b1a275d3f7feb641d0083326137f617654ae52eef`, identico alla sorgente. File da 0, 1 e 65 byte conservano dimensioni e hash attesi; nessun temporaneo OpenHDD. Espulsione normale riuscita. L'utente riferisce `chkdsk X:` senza problemi e hash PowerShell del file da 8 MiB identico all'atteso su Windows; output completo non acquisito.
+
+## Quinta copia della versione aggiornata — 128 MiB
+
+- Il comando per `OpenHDD-v2-128MiB.bin` sulla stessa USB sacrificabile ha riportato `PASS: copied, independently verified and ejected.` secondo l'utente.
+- Dopo reinserimento, macOS legge il nuovo file da 134.217.728 byte con SHA-256 `66b2c41461ed686925b342a9bfadc0ceace20319cfd3575465c62da0cf2d566f`, identico alla sorgente. I quattro file precedenti conservano dimensioni e hash attesi; nessun temporaneo OpenHDD nella radice. Espulsione normale riuscita. L'utente riferisce `chkdsk X:` senza problemi e hash PowerShell del file da 128 MiB identico all'atteso su Windows; output completo non acquisito.

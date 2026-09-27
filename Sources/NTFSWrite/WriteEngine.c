@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/disk.h>
@@ -435,6 +436,9 @@ static int create_pending(Target *target, int source_fd, const struct stat *sour
             done += written;
         }
         offset += amount;
+        if (target->is_device && offset % (64ULL * 1024 * 1024) == 0)
+            fprintf(stderr, "Data transfer: %llu MiB processed; not verified.\n",
+                    (unsigned long long)(offset / (1024 * 1024)));
         #ifdef OPENHDD_TESTING
         if (getenv("OPENHDD_TEST_ABORT_AFTER_FIRST_CHUNK"))
             _exit(86); /* Emulate a crash before close or sync. */
