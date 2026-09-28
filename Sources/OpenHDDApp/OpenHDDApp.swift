@@ -563,21 +563,147 @@ extension DiskStore {
         return NTFSCopyRunner.normalized(String(path.dropFirst(root.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")))
     }
 
+    func canEdit(_ record: DiskRecord?) -> Bool {
+        guard let record else { return false }
+        return record.isNTFS && record.isExternal && record.mountURL != nil && !busy
+    }
+
+    /// Picks entries on the read-only mounted volume and returns their paths
+    /// relative to the volume root.
+    private func pickOnVolume(_ record: DiskRecord, title: String, prompt: String,
+                              files: Bool, folders: Bool, multiple: Bool,
+                              allowRoot: Bool = false) -> [String]? {
+        guard let mount = record.mountURL?.standardizedFileURL else {
+            alert("Disco non montato", "Apri prima il disco in sola lettura.")
+            return nil
+        }
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.prompt = prompt
+        panel.canChooseFiles = files
+        panel.canChooseDirectories = folders
+        panel.allowsMultipleSelection = multiple
+        panel.canCreateDirectories = false
+        panel.directoryURL = mount
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return nil }
+        let root = mount.path
+        var paths: [String] = []
+        for url in panel.urls {
+            let path = url.standardizedFileURL.path
+            if path == root {
+                if allowRoot { paths.append(""); continue }
+                alert("Scelta non valida", "Scegli file o cartelle dentro il disco, non il disco intero.")
+                return nil
+            }
+            guard path.hasPrefix(root + "/") else {
+                alert("Scelta non valida", "Scegli elementi che si trovano sul disco «\(record.name)».")
+                return nil
+            }
+            paths.append(NTFSCopyRunner.normalized(String(path.dropFirst(root.count + 1))))
+        }
+        return paths
+    }
+
+    private func askName(_ title: String, _ text: String, initial: String) -> String? {
+        let ask = NSAlert()
+        ask.messageText = title
+        ask.informativeText = text
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = initial
+        ask.accessoryView = field
+        ask.addButton(withTitle: "OK")
+        ask.addButton(withTitle: "Annulla")
+        ask.window.initialFirstResponder = field
+        guard ask.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = NTFSCopyRunner.normalized(field.stringValue.trimmingCharacters(in: .newlines))
+        if let problem = NTFSCopyRunner.problem(withName: name) {
+            alert("Nome non valido", "«\(name)»: \(problem).")
+            return nil
+        }
+        return name
+    }
+
+    func beginDelete() {
+        guard let record = currentSelection(), canEdit(record),
+              let paths = pickOnVolume(record, title: "Elementi da eliminare su «\(record.name)»",
+                                       prompt: "Avanti", files: true, folders: true,
+                                       multiple: true) else { return }
+        let names = paths.map { $0.split(separator: "/").last.map(String.init) ?? $0 }
+        let listed = names.prefix(8).map { "• \($0)" }.joined(separator: "\n") +
+            (names.count > 8 ? "\n… e altri \(names.count - 8)" : "")
+        let confirm = NSAlert()
+        confirm.alertStyle = .warning
+        confirm.messageText = "Eliminare definitivamente \(paths.count) elemento/i da «\(record.name)»?"
+        confirm.informativeText = """
+        \(listed)
+
+        Le cartelle vengono eliminate con tutto il contenuto. Sul disco NTFS non c'è un Cestino: l'operazione non si può annullare.
+        """
+        confirm.addButton(withTitle: "Elimina")
+        confirm.addButton(withTitle: "Annulla")
+        confirm.buttons.first?.hasDestructiveAction = true
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        run(EditRequest(partition: record.bsdName, volumeName: record.name,
+                        kind: .delete(paths)), record: record)
+    }
+
+    func beginRename() {
+        guard let record = currentSelection(), canEdit(record),
+              let path = pickOnVolume(record, title: "Elemento da rinominare su «\(record.name)»",
+                                      prompt: "Rinomina…", files: true, folders: true,
+                                      multiple: false)?.first else { return }
+        let old = path.split(separator: "/").last.map(String.init) ?? path
+        guard let name = askName("Rinomina «\(old)»", "Nuovo nome (resta nella stessa cartella):",
+                                 initial: old), name != old else { return }
+        run(EditRequest(partition: record.bsdName, volumeName: record.name,
+                        kind: .rename(path, to: name)), record: record)
+    }
+
+    func beginNewFolder() {
+        guard let record = currentSelection(), canEdit(record),
+              let parent = pickOnVolume(record, title: "Dove creare la cartella su «\(record.name)»",
+                                        prompt: "Qui", files: false, folders: true,
+                                        multiple: false, allowRoot: true)?.first,
+              let name = askName("Nuova cartella",
+                                 "Nome della cartella in «\(parent.isEmpty ? record.name : parent)»:",
+                                 initial: "Nuova cartella") else { return }
+        run(EditRequest(partition: record.bsdName, volumeName: record.name,
+                        kind: .newFolder(in: parent, named: name)), record: record)
+    }
+
     private func run(_ plan: CopyPlan, record: DiskRecord) {
+        perform(record: record, title: "Copia su «\(plan.volumeName)»", names: plan.names,
+                partition: plan.partition, editing: false) { progressFile in
+            NTFSCopyRunner.run(plan, progressFile: progressFile)
+        }
+    }
+
+    private func run(_ request: EditRequest, record: DiskRecord) {
+        perform(record: record, title: request.title, names: [],
+                partition: request.partition, editing: true) { progressFile in
+            NTFSCopyRunner.run(request, progressFile: progressFile)
+        }
+    }
+
+    /// Runs one engine operation with the shared progress bar and outcome
+    /// handling; the engine itself enforces every safety rule.
+    private func perform(record: DiskRecord, title: String, names: [String],
+                         partition: String, editing: Bool,
+                         operation: @escaping @Sendable (URL) -> CopyOutcome) {
         let progressFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("openhdd-progress-\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: progressFile.path, contents: nil,
                                              attributes: [.posixPermissions: 0o600]) else {
-            message = "Impossibile preparare la copia."
+            message = "Impossibile preparare l'operazione."
             return
         }
         busy = true
         copyProgress = 0
-        copyTitle = "Copia su «\(plan.volumeName)»"
-        statusOverrides[record.bsdName] = "Trasferimento in corso"
-        message = NTFSCopyRunner.needsAdministrator(plan.partition) ?
+        copyTitle = title
+        statusOverrides[record.bsdName] = editing ? "Modifica in corso" : "Trasferimento in corso"
+        message = NTFSCopyRunner.needsAdministrator(partition) ?
             "macOS chiederà la password di amministratore per scrivere sul disco." :
-            "Copia in corso…"
+            "Operazione in corso…"
         copyDetail = "Preparazione…"
         copyRemaining = ""
         var clock = TransferClock()
@@ -587,28 +713,29 @@ extension DiskStore {
                 let now = ProcessInfo.processInfo.systemUptime
                 clock.update(progress, now: now)
                 self.copyProgress = progress.fraction
-                var detail = "File \(progress.fileIndex + 1) di \(progress.fileCount) · " +
-                    progress.label(names: plan.names)
+                var detail = (editing ? "Elemento" : "File") +
+                    " \(progress.fileIndex + 1) di \(progress.fileCount) · " +
+                    progress.label(names: names)
                 if (progress.phase == 1 || progress.phase == 3), !clock.speed.isEmpty {
                     detail += " · " + clock.speed
                 }
                 self.copyDetail = detail
                 self.copyRemaining = progress.done >= progress.total ?
                     "Quasi finito" : "Tempo rimanente: " + clock.remaining(progress, now: now).lowercasedFirst
-                self.message = "Non scollegare il disco finché non compare «Copia completata»."
+                self.message = "Non scollegare il disco finché l'operazione non è completata."
             }
         }
         Task.detached { [store = self] in
-            let outcome = NTFSCopyRunner.run(plan, progressFile: progressFile)
+            let outcome = operation(progressFile)
             try? FileManager.default.removeItem(at: progressFile)
             await MainActor.run {
                 timer.invalidate()
-                store.finishCopy(outcome, record: record)
+                store.finishCopy(outcome, record: record, editing: editing)
             }
         }
     }
 
-    private func finishCopy(_ outcome: CopyOutcome, record: DiskRecord) {
+    private func finishCopy(_ outcome: CopyOutcome, record: DiskRecord, editing: Bool = false) {
         busy = false
         copyProgress = nil
         copyDetail = ""
@@ -619,11 +746,13 @@ extension DiskStore {
             message = text
         case .cancelled:
             statusOverrides.removeValue(forKey: record.bsdName)
-            message = "Copia annullata: nessuna modifica al disco."
+            message = "Operazione annullata: nessuna modifica al disco."
         case .failure(let text, let needsWindowsCheck):
             statusOverrides[record.bsdName] = needsWindowsCheck ? "Verifica necessaria" : "Non scritto"
             message = text
-            alert(needsWindowsCheck ? "Copia non completata: controlla il disco su Windows" : "Copia non eseguita", text)
+            let noun = editing ? "Modifica" : "Copia"
+            alert(needsWindowsCheck ? "\(noun) non completata: controlla il disco su Windows" :
+                    "\(noun) non eseguita", text)
         }
         if let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, record.bsdName) {
             refresh(disk)
@@ -702,6 +831,14 @@ private struct ContentView: View {
                 #if OPENHDD_LOCAL
                 Button("Copia sul disco…") { store.beginCopy() }
                     .disabled(!store.canCopy(store.currentSelection()))
+                Menu("Modifica") {
+                    Button("Nuova cartella…") { store.beginNewFolder() }
+                    Button("Rinomina…") { store.beginRename() }
+                    Divider()
+                    Button("Elimina…", role: .destructive) { store.beginDelete() }
+                }
+                .fixedSize()
+                .disabled(!store.canEdit(store.currentSelection()))
                 #endif
                 Spacer()
                 Button("Espelli") { store.eject() }

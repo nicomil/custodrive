@@ -131,6 +131,19 @@ foreach ($case in $cases) {
         $r.new_files = @()
         foreach ($spec in ($case.new_files -split ';')) {
             if (-not $spec) { continue }
+            if ($spec.StartsWith('absent:') -or $spec.StartsWith('dir:')) {
+                # Edits: an entry that must be gone, or a folder that must exist.
+                $rel = $spec.Substring($spec.IndexOf(':') + 1)
+                $path = Join-Path $rootPath $rel
+                $present = Test-Path -LiteralPath $path
+                $state = $(if ($spec.StartsWith('absent:')) { if ($present) { 'STILL_PRESENT' } else { 'absent' } }
+                          else { if (Test-Path -LiteralPath $path -PathType Container) { 'folder' } else { 'MISSING' } })
+                if ($case.expect -eq 'clean' -and ($state -eq 'STILL_PRESENT' -or $state -eq 'MISSING')) {
+                    $r.problems += "entry $rel is $state"
+                }
+                $r.new_files += [ordered]@{ path = $rel; state = $state; optional = ($case.expect -ne 'clean') }
+                continue
+            }
             $optional = $spec.StartsWith('optional:')
             $spec = $spec -replace '^optional:', ''
             $hash, $rel = $spec -split '\|', 2

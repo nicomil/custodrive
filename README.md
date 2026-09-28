@@ -62,8 +62,30 @@ volume venga rimontato durante la copia. I file di un lotto vengono prima
 scritti tutti, poi riletti una sola volta dal disco, poi pubblicati: i
 montaggi NTFS sono pochi e costanti anche con migliaia di foto.
 
-Fuori da questa versione: sovrascrivere, cancellare o rinominare file,
-scrivere dal Finder, creare cartelle, file compressi o cifrati.
+## Modificare il disco: nuova cartella, rinomina, elimina (v2)
+
+Dal menu **Modifica** dell'app:
+
+- **Nuova cartella…**: scegli dove, poi il nome.
+- **Rinomina…**: un file o una cartella, nella stessa cartella; si può anche
+  cambiare solo maiuscole e minuscole.
+- **Elimina…**: file e cartelle, queste con tutto il contenuto. Sul disco NTFS
+  non c'è un Cestino: l'app chiede conferma e l'operazione non si annulla.
+
+Valgono le stesse regole della copia: volume marcato da controllare per tutta
+l'operazione, verifica finale, rifiuto di volumi a rischio. In più OpenHDD non
+tocca i file di sistema (`$MFT`, `System Volume Information`…) e non segue
+junction, link simbolici o file cifrati: se una cartella ne contiene, rifiuta
+senza cambiare nulla. Da riga di comando:
+
+```sh
+sudo Build/OpenHDDCopy --disk disk4s1 --mkdir "Foto" "Estate 2026"
+sudo Build/OpenHDDCopy --disk disk4s1 --rename "Foto/Estate 2026" "Estate 2026 mare"
+sudo Build/OpenHDDCopy --disk disk4s1 --delete "vecchio.bin" "Cartella da togliere"
+```
+
+Fuori da queste versioni: sovrascrivere file esistenti, spostare tra
+cartelle, scrivere dal Finder, file compressi o cifrati.
 
 ### Da riga di comando
 

@@ -116,6 +116,40 @@ questo il device a blocchi resta aperto in esclusiva per tutta la copia.
 Dopo le modifiche: suite su immagini verde, campagna di tagli con 21 scritture
 per copia (erano 85) e zero violazioni, anche con settori da 4 KiB emulati.
 
+## v2 — modifiche: nuova cartella, rinomina, elimina
+
+Stesso protocollo della copia: dirty bit acceso e sincronizzato prima di ogni
+modifica, tutte le modifiche di una richiesta in un solo montaggio, verifica in
+sola lettura (nome sparito, nuovo nome sullo stesso inode, cartella creata),
+dirty bit spento solo alla fine.
+
+| Operazione | Implementazione | Stato intermedio dopo un'interruzione |
+|---|---|---|
+| Nuova cartella | `ntfs_create` di una directory | Cartella presente o assente; volume dirty |
+| Rinomina | nuovo nome, poi rimozione del vecchio; solo maiuscole/minuscole passa da un nome temporaneo | Un elemento con due nomi o con uno solo; volume dirty |
+| Elimina | albero visitato dal basso, `ntfs_delete` per ogni voce, junction/link simbolici/cifrati rifiutati prima | Parte dell'albero già eliminata; volume dirty |
+
+Rifiuti preventivi: file di sistema (`$…`, `System Volume Information`),
+temporanei OpenHDD, nomi non validi per Windows, nomi già presenti (senza
+distinzione di maiuscole), elementi mancanti. Collaudo: `Tests/run-edit-probe.sh`
+(operazioni, rifiuti a immagine invariata, crash, riparazione, errori I/O),
+`OPENHDD_CAMPAIGN_EDIT=delete|rename|mkdir Tests/run-powercut-campaign.sh`
+(0 violazioni con strappi a 512 B e 4 KiB), verifica Windows con
+`Tests/prepare-windows-v2-edit-cases.sh`.
+
+Esito Windows (28 settembre 2026): **46/46 PASS**. Le modifiche completate
+(eliminazione, rinomina, anche solo maiuscole, cartelle annidate con nomi
+accentati) passano `chkdsk` senza errori. Le interruzioni (stop ai confini
+delle fasi e 38 tagli di corrente a 512 B e 4 KiB) lasciano volumi che
+`chkdsk /f` ripara, con un secondo `chkdsk` pulito e tutti i file preesistenti
+integri al loro posto.
+
+Collaudo su disco reale (chiavetta OPENHDD-V4, stesso giorno): nuova cartella,
+rinomina ed eliminazione eseguite dal menu Modifica dell'app; poi su Windows
+volume sano, `chkdsk` in sola lettura senza errori e file preesistenti con
+hash invariato. Per restituire il disco al Mac si usa
+`Tests/windows/eject-usb.ps1 -Label ETICHETTA` (rimozione sicura vera).
+
 ## Fase 2
 
 La specifica transazionale e il laboratorio `$LogFile` (`Tests/windows/*journal*`,

@@ -16,6 +16,7 @@ typedef struct {
     int64_t modified_ns;
     uint32_t kind; /* 1 = regular file, 2 = directory */
     uint32_t hard_link_count;
+    uint32_t special; /* 1 when reparse point or encrypted: never traversed */
 } OHNTFSItem;
 
 typedef int (*OHNTFSEntryCallback)(void *context, const char *utf8_name,

@@ -14,6 +14,8 @@
 # A clean (committed) image must keep the pre-existing file intact.
 #
 # Usage: Tests/run-powercut-campaign.sh [PARTITION_IMAGE [EXPORT_DIR [SEEDS]]]
+# OPENHDD_CAMPAIGN_EDIT=delete|rename|mkdir cuts a v2 edit instead of a copy
+# (on a fresh fixture that also holds the folder Foto/Estate/b.bin).
 # PARTITION_IMAGE must already contain /old.bin (defaults to a fresh fixture).
 # EXPORT_DIR receives sample images from nine cuts spread over the session.
 set -eu
@@ -45,12 +47,35 @@ fi
 export_dir=${2:-}
 [ -z "$export_dir" ] || mkdir -p "$export_dir"
 dd if=/dev/urandom of="$work/new.bin" bs=1k count=2100 status=none
+edit=${OPENHDD_CAMPAIGN_EDIT:-}
+if [ -n "$edit" ]; then
+  "$tool" --image "$base" --mkdir "" Foto > /dev/null
+  "$tool" --image "$base" --mkdir Foto Estate > /dev/null
+  "$tool" --image "$base" --dir Foto/Estate "$work/new.bin" b.bin > /dev/null
+fi
+operation() { # image
+  case "$edit" in
+    delete) "$tool" --image "$1" --delete Foto ;;
+    rename) "$tool" --image "$1" --rename Foto "Foto 2026" ;;
+    mkdir) "$tool" --image "$1" --mkdir "" Nuova ;;
+    *) "$tool" --image "$1" "$work/new.bin" new.bin ;;
+  esac
+}
+committed() { # image: the operation's effect is complete and readable
+  case "$edit" in
+    delete) ! "$build/ntfsprogs/ntfsls" -p / "$1" 2>/dev/null | grep -q '^Foto$' ;;
+    rename) "$ntfscat" "$1" "/Foto 2026/Estate/b.bin" 2>/dev/null | cmp -s - "$work/new.bin" &&
+            ! "$build/ntfsprogs/ntfsls" -p / "$1" 2>/dev/null | grep -q '^Foto$' ;;
+    mkdir) "$build/ntfsprogs/ntfsls" -p / "$1" 2>/dev/null | grep -q '^Nuova$' ;;
+    *) "$ntfscat" "$1" /new.bin > "$work/new-read.bin" 2>/dev/null &&
+       cmp -s "$work/new.bin" "$work/new-read.bin" ;;
+  esac
+}
 base_hash=$(shasum -a 256 "$base" | awk '{print $1}')
 
 cp "$base" "$work/count.img"
 writes=$(OPENHDD_TEST_POWERCUT_AT_WRITE=999999999 OPENHDD_TEST_REPORT_WRITES=1 \
-  "$tool" --image "$work/count.img" "$work/new.bin" new.bin 2>&1 >/dev/null |
-  sed -n 's/^writes=//p')
+  operation "$work/count.img" 2>&1 >/dev/null | sed -n 's/^writes=//p')
 test -n "$writes"
 
 step=$((writes / 8))
@@ -64,7 +89,7 @@ while [ "$cut" -le "$writes" ]; do
     cp "$base" "$image"
     set +e
     OPENHDD_TEST_POWERCUT_AT_WRITE=$cut OPENHDD_TEST_POWERCUT_SEED=$seed \
-      "$tool" --image "$image" "$work/new.bin" new.bin > /dev/null 2>&1
+      operation "$image" > /dev/null 2>&1
     code=$?
     set -e
     runs=$((runs + 1))
@@ -82,9 +107,7 @@ while [ "$cut" -le "$writes" ]; do
         unreadable) class=unreadable ;;
         dirty=1*) class=marked ;;
         dirty=0*)
-          if printf '%s' "$state" | grep -q 'pending=0 code=0' &&
-             "$ntfscat" "$image" /new.bin > "$work/new-read.bin" 2>/dev/null &&
-             cmp -s "$work/new.bin" "$work/new-read.bin"; then
+          if printf '%s' "$state" | grep -q 'pending=0 code=0' && committed "$image"; then
             class=committed
           else
             class=VIOLATION

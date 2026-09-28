@@ -46,6 +46,23 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
                       OHCopyProgress progress, void *progress_context,
                       size_t *failed_index, int *failure_stage,
                       uint32_t *safety_warnings, size_t *removed_pending);
+/* v2 edits of existing entries. Paths are relative to the volume root,
+   '/'-separated, NFC. Delete removes a file or a whole folder (never
+   following junctions or symbolic links); rename stays in the same folder;
+   new folder creates `name` inside `path` ("" for the root). All edits of a
+   call run in one session marked dirty, like a copy. */
+enum { OH_EDIT_DELETE = 1, OH_EDIT_RENAME = 2, OH_EDIT_MKDIR = 3 };
+typedef struct {
+    int kind;
+    const char *path;
+    const char *name; /* new name for rename and new folder */
+} OHEdit;
+int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
+                   const OHEdit *edits, size_t count,
+                   OHCopyProgress progress, void *progress_context,
+                   size_t *failed_index, int *failure_stage,
+                   uint32_t *safety_warnings, size_t *removed_pending);
+
 /* Short description of the last low-level failure, or "" when none. */
 const char *oh_last_error(void);
 int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,

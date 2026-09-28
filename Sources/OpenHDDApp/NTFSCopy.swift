@@ -35,6 +35,7 @@ struct CopyProgress {
         let name = fileIndex < names.count ? "«\(names[fileIndex])»" : ""
         switch phase {
         case 0: return "Controlli preliminari del disco"
+        case 1 where names.isEmpty: return "Applicazione delle modifiche"
         case 1: return "Scrittura di \(name)"
         case 2: return "Sincronizzazione del disco"
         case 3: return "Verifica di \(name) (rilettura dal disco)"
@@ -75,6 +76,48 @@ struct TransferClock {
     var speed: String {
         unitsPerSecond > 0 ?
             ByteCountFormatter.string(fromByteCount: Int64(unitsPerSecond), countStyle: .file) + "/s" : ""
+    }
+}
+
+/// A change to entries already on the volume. Paths are relative to the
+/// volume root, "/"-separated; the tool refuses system entries itself.
+struct EditRequest {
+    enum Kind {
+        case delete([String])
+        case rename(String, to: String)
+        case newFolder(in: String, named: String)
+    }
+
+    let partition: String
+    let volumeName: String
+    let kind: Kind
+
+    var arguments: [String] {
+        switch kind {
+        case .delete(let paths): return ["--delete"] + paths
+        case .rename(let path, let name): return ["--rename", path, name]
+        case .newFolder(let parent, let name): return ["--mkdir", parent, name]
+        }
+    }
+
+    var title: String {
+        switch kind {
+        case .delete: return "Eliminazione su «\(volumeName)»"
+        case .rename: return "Rinomina su «\(volumeName)»"
+        case .newFolder: return "Nuova cartella su «\(volumeName)»"
+        }
+    }
+
+    var successMessage: String {
+        switch kind {
+        case .delete(let paths):
+            return "Eliminazione completata e verificata: \(paths.count) elemento/i. Il disco è di nuovo in sola lettura."
+        case .rename(let path, let name):
+            let old = path.split(separator: "/").last.map(String.init) ?? path
+            return "«\(old)» rinominato in «\(name)» e verificato. Il disco è di nuovo in sola lettura."
+        case .newFolder(_, let name):
+            return "Cartella «\(name)» creata e verificata. Il disco è di nuovo in sola lettura."
+        }
     }
 }
 
@@ -123,28 +166,44 @@ enum NTFSCopyRunner {
     }
 
     static func run(_ plan: CopyPlan, progressFile: URL) -> CopyOutcome {
-        guard let tool = toolURL else {
-            return .failure("Componente di copia mancante nell'app.", needsWindowsCheck: false)
-        }
-        var arguments = ["--disk", plan.partition, "--yes",
-                         "--owner-uid", String(getuid()),
-                         "--progress", progressFile.path]
+        var arguments: [String] = []
         if let directory = plan.directory { arguments += ["--dir", directory] }
         for (source, name) in zip(plan.sources, plan.names) {
             arguments += [source.path, name]
         }
+        return execute(partition: plan.partition, arguments: arguments,
+                       progressFile: progressFile) { summary(of: $0, plan: plan) }
+    }
 
-        // The tool runs as the user, so it reads the chosen files with the
-        // app's permissions; for a USB drive it asks macOS (authopen) for an
-        // administrator-authorised descriptor of that one partition only.
+    static func run(_ request: EditRequest, progressFile: URL) -> CopyOutcome {
+        execute(partition: request.partition, arguments: request.arguments,
+                progressFile: progressFile) { text in
+            var message = request.successMessage
+            if text.contains("Removed ") {
+                message += " Rimossi anche i file temporanei di una copia interrotta in precedenza."
+            }
+            return message
+        }
+    }
+
+    // The tool runs as the user, so it reads the chosen files with the app's
+    // permissions; for a USB drive it asks macOS (authopen) for an
+    // administrator-authorised descriptor of that one partition only.
+    private static func execute(partition: String, arguments: [String], progressFile: URL,
+                                success: (String) -> String) -> CopyOutcome {
+        guard let tool = toolURL else {
+            return .failure("Componente di copia mancante nell'app.", needsWindowsCheck: false)
+        }
         let process = Process()
         process.executableURL = tool
-        process.arguments = arguments
+        process.arguments = ["--disk", partition, "--yes",
+                             "--owner-uid", String(getuid()),
+                             "--progress", progressFile.path] + arguments
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
         do { try process.run() } catch {
-            return .failure("Avvio della copia non riuscito: \(error.localizedDescription)",
+            return .failure("Avvio dell'operazione non riuscito: \(error.localizedDescription)",
                             needsWindowsCheck: false)
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()
@@ -154,7 +213,7 @@ enum NTFSCopyRunner {
             return .cancelled
         }
         if process.terminationStatus == 0, text.contains("PASS:") {
-            return .success(summary(of: text, plan: plan))
+            return .success(success(text))
         }
         return .failure(explanation(of: text), needsWindowsCheck: text.contains("chkdsk"))
     }
@@ -180,9 +239,11 @@ enum NTFSCopyRunner {
             ("unfinished OpenHDD transfer", "Una copia precedente è stata interrotta. Collegalo a Windows ed esegui «chkdsk X: /f», poi riprova."),
             ("previous OpenHDD transfer unresolved", "Una copia precedente su questo Mac non si è conclusa. Controlla il disco su Windows con «chkdsk X: /f», poi riprova."),
             ("$TXF_DATA", "Il volume contiene dati transazionali Windows che OpenHDD non modifica."),
-            ("already exists", "Esiste già un file con lo stesso nome (senza distinguere maiuscole e minuscole). Rinomina il file di origine."),
+            ("already exists", "Esiste già un elemento con lo stesso nome nella stessa cartella (maiuscole e minuscole non contano per Windows). Scegli un altro nome."),
             ("not enough free space", "Spazio libero insufficiente sul disco NTFS."),
-            ("destination folder not found", "La cartella di destinazione non esiste più sul disco."),
+            ("not found on the volume", "L'elemento o la cartella indicati non esistono più sul disco."),
+            ("protected system entry", "Non si possono modificare i file di sistema di NTFS o di Windows ($MFT, System Volume Information…)."),
+            ("junction, symbolic", "L'elemento è o contiene un collegamento (junction o link simbolico) o un file cifrato: OpenHDD non lo segue e non ha cambiato nulla."),
             ("normal unmount failed", "macOS non riesce a smontare il disco: chiudi i file aperti da quel disco e riprova."),
             ("not an external NTFS partition", "Il disco selezionato non è una partizione NTFS esterna."),
             ("exclusive open", "macOS non ha lasciato l'accesso esclusivo al disco: un'altra app o il sistema lo sta usando. Chiudi i file aperti dal disco e riprova."),
@@ -193,9 +254,9 @@ enum NTFSCopyRunner {
             ("could not be opened", "Uno dei file di origine non si può aprire."),
             ("changed while it was being copied", "Uno dei file di origine è stato modificato durante la copia: nessun file è stato pubblicato."),
         ]
-        var message = rules.first(where: { text.contains($0.0) })?.1 ?? "Copia non riuscita."
+        var message = rules.first(where: { text.contains($0.0) })?.1 ?? "Operazione non riuscita."
         if text.contains("marked for checking") {
-            message += " La copia si è interrotta dopo l'inizio della scrittura: i file già presenti non sono stati modificati, ma il disco va controllato su Windows con «chkdsk X: /f» prima di scriverci di nuovo."
+            message += " L'operazione si è interrotta dopo l'inizio della scrittura: i file non coinvolti non sono stati toccati, ma il disco va controllato su Windows con «chkdsk X: /f» prima di scriverci di nuovo."
         }
         let lines = text.split(separator: "\n").map(String.init)
         let detail = lines.first(where: { $0.hasPrefix("Detail:") }) ??

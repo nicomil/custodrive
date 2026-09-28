@@ -357,6 +357,11 @@ typedef struct {
     size_t count;
     const char **sources;
     char **names;                /* NFC copies owned by the request */
+    int edit_kind;               /* 0 for a copy, else OH_EDIT_* */
+    size_t edit_count;
+    OHEdit *edits;
+    char **edit_strings;         /* NFC paths and names owned by the request */
+    size_t edit_string_count;
 } CopyRequest;
 
 typedef struct {
@@ -393,6 +398,9 @@ static void request_free(CopyRequest *request)
 {
     if (request->names)
         for (size_t i = 0; i < request->count; ++i) free(request->names[i]);
+    for (size_t i = 0; i < request->edit_string_count; ++i) free(request->edit_strings[i]);
+    free(request->edit_strings);
+    free(request->edits);
     free(request->names);
     free(request->sources);
     free((char *)request->directory);
@@ -486,10 +494,17 @@ static void explain_failure(int code, int stage, size_t index, size_t count,
             fputs("Refused: not enough free space for all files plus reserve.\n",
                   stderr);
         else if (code == ENOENT || code == ENOTDIR)
-            fputs("Refused: destination folder not found on the volume.\n", stderr);
+            fprintf(stderr, "Refused: %s not found on the volume.\n",
+                    stage == 1 && index ? "an item" : "the item or destination folder");
         else if (code == EINVAL)
             fprintf(stderr, "Refused: invalid name or source for item %zu.\n",
                     index + 1);
+        else if (code == EACCES)
+            fprintf(stderr, "Refused: item %zu is a protected system entry.\n",
+                    index + 1);
+        else if (code == ENOTSUP)
+            fprintf(stderr, "Refused: item %zu is or contains a junction, symbolic "
+                            "link or encrypted file; nothing changed.\n", index + 1);
         else if (!warnings && code == EBUSY)
             fputs("Preflight refused: volume busy or safety state uncertain; "
                   "no writes started.\n", stderr);
@@ -530,6 +545,35 @@ static int run_check_image(const char *path)
     return code ? 1 : 0;
 }
 
+static size_t request_items(const CopyRequest *request)
+{
+    return request->edit_kind ? request->edit_count : request->count;
+}
+
+static int run_engine(const CopyRequest *request, int fd, uint64_t size,
+                      int is_device, const OHCopyItem *items,
+                      ProgressFile *progress, size_t *failed, int *stage,
+                      uint32_t *warnings, size_t *removed)
+{
+    if (request->edit_kind)
+        return oh_edit_volume(fd, size, is_device, request->edits,
+                              request->edit_count, report_progress, progress,
+                              failed, stage, warnings, removed);
+    return oh_copy_new_files(fd, size, is_device, request->directory, items,
+                             request->count, report_progress, progress, failed,
+                             stage, warnings, removed);
+}
+
+static void print_pass(const CopyRequest *request, const char *suffix)
+{
+    if (request->edit_kind)
+        printf("PASS: %zu change(s) applied, verified; volume clean%s.\n",
+               request->edit_count, suffix);
+    else
+        printf("PASS: %zu file(s) copied, independently verified; volume clean%s.\n",
+               request->count, suffix);
+}
+
 static int run_image(const CopyRequest *request)
 {
     struct stat before, after;
@@ -537,7 +581,7 @@ static int run_image(const CopyRequest *request)
     uint32_t warnings = 0;
     size_t failed = 0;
     const char *path = request->target;
-    OHCopyItem *items = calloc(request->count, sizeof(*items));
+    OHCopyItem *items = calloc(request->count ? request->count : 1, sizeof(*items));
     if (!items) return 1;
     if (lstat(path, &before) || !private_image(path, &before)) {
         fputs("Refused: target must be a private regular image.\n", stderr);
@@ -555,15 +599,13 @@ static int run_image(const CopyRequest *request)
     ProgressFile progress = { .fd = open_progress(request->progress_path, -1),
                               .count = request->count, .last_phase = -1 };
     size_t removed = 0;
-    int code = oh_copy_new_files(target, (uint64_t)after.st_size, 0,
-                                 request->directory, items, request->count,
-                                 report_progress, &progress, &failed, &stage,
-                                 &warnings, &removed);
+    int code = run_engine(request, target, (uint64_t)after.st_size, 0, items,
+                          &progress, &failed, &stage, &warnings, &removed);
     if (removed)
         fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
                         "interrupted copy.\n", removed);
     if (progress.fd >= 0) close(progress.fd);
-    if (code) explain_failure(code, stage, failed, request->count, warnings);
+    if (code) explain_failure(code, stage, failed, request_items(request), warnings);
     else result = 0;
 out:
     close_sources(items, request->count);
@@ -572,8 +614,7 @@ out:
         fputs("Image close failed; no success reported.\n", stderr);
         result = 1;
     }
-    if (!result) printf("PASS: %zu file(s) copied, verified; volume clean.\n",
-                        request->count);
+    if (!result) print_pass(request, "");
     return result;
 }
 
@@ -693,7 +734,7 @@ static int run_disk(const CopyRequest *request)
     uint32_t warnings = 0;
     size_t failed = 0;
     int had_mount = 0, unmounted = 0, wrote = 0;
-    OHCopyItem *items = calloc(request->count, sizeof(*items));
+    OHCopyItem *items = calloc(request->count ? request->count : 1, sizeof(*items));
     DiskLease lease = {0};
     if (!items) return 1;
     for (size_t i = 0; i < request->count; ++i) items[i].source_fd = -1;
@@ -841,10 +882,8 @@ static int run_disk(const CopyRequest *request)
         .fd = open_progress(request->progress_path, owner_uid),
         .count = request->count, .last_phase = -1 };
     size_t removed = 0;
-    int code = oh_copy_new_files(target, lease.size, 1, request->directory,
-                                 items, request->count, report_progress,
-                                 &progress, &failed, &stage, &warnings,
-                                 &removed);
+    int code = run_engine(request, target, lease.size, 1, items, &progress,
+                          &failed, &stage, &warnings, &removed);
     if (removed)
         fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
                         "interrupted copy.\n", removed);
@@ -852,7 +891,7 @@ static int run_disk(const CopyRequest *request)
     if (code) {
         if (stage == 1 && !quarantine_clear(quarantine_dir, quarantine_file))
             quarantine_active = 0; /* preflight never enters RW mount */
-        explain_failure(code, stage, failed, request->count, warnings);
+        explain_failure(code, stage, failed, request_items(request), warnings);
         goto out;
     }
     wrote = 1;
@@ -902,9 +941,7 @@ out:
         } else quarantine_active = 0;
     }
     if (quarantine_dir >= 0) close(quarantine_dir);
-    if (!result)
-        printf("PASS: %zu file(s) copied, independently verified; volume clean%s.\n",
-               request->count, request->eject ? " and ejected" : "");
+    if (!result) print_pass(request, request->eject ? " and ejected" : "");
     else fputs("NO SUCCESS: see the message above.\n", stderr);
     lease_close(&lease);
     return result;
@@ -1062,7 +1099,11 @@ static void usage(void)
           "       OpenHDDCopy --image PRIVATE_IMAGE [--dir PATH] SOURCE NAME [SOURCE NAME ...]\n"
           "       sudo OpenHDDCopy --disk diskXsY [--dir PATH] [--yes] [--eject]\n"
           "                        [--owner-uid UID] [--progress FILE]\n"
-          "                        SOURCE NAME [SOURCE NAME ...]\n", stderr);
+          "                        SOURCE NAME [SOURCE NAME ...]\n"
+          "       ... --image IMAGE | --disk diskXsY [options]\n"
+          "           --delete PATH [PATH ...] | --rename PATH NEW_NAME |\n"
+          "           --mkdir PARENT_PATH NAME   (paths relative to the volume root)\n",
+          stderr);
 }
 
 static int parse_uid(const char *text, long *out)
@@ -1107,9 +1148,39 @@ int main(int argc, char **argv)
             request.progress_path = argv[++index];
         else if (!strcmp(option, "--owner-uid") && disk && index + 1 < argc) {
             if (parse_uid(argv[++index], &request.owner_uid)) { usage(); return 2; }
-        } else { usage(); request_free(&request); return 2; }
+        } else if (!strcmp(option, "--delete")) { request.edit_kind = OH_EDIT_DELETE; ++index; break; }
+        else if (!strcmp(option, "--rename")) { request.edit_kind = OH_EDIT_RENAME; ++index; break; }
+        else if (!strcmp(option, "--mkdir")) { request.edit_kind = OH_EDIT_MKDIR; ++index; break; }
+        else { usage(); request_free(&request); return 2; }
     }
     int remaining = argc - index;
+    if (request.edit_kind) {
+        size_t wanted = request.edit_kind == OH_EDIT_DELETE ? 0 : 2;
+        if (remaining < 1 || (wanted && remaining != (int)wanted)) {
+            usage(); request_free(&request); return 2;
+        }
+        request.edit_count = request.edit_kind == OH_EDIT_DELETE ? (size_t)remaining : 1;
+        request.edits = calloc(request.edit_count, sizeof(*request.edits));
+        request.edit_strings = calloc((size_t)remaining, sizeof(char *));
+        if (!request.edits || !request.edit_strings) { request_free(&request); return 1; }
+        for (int i = 0; i < remaining; ++i) {
+            const char *value = argv[index + i];
+            while (*value == '/') ++value;   /* paths are relative to the root */
+            char *copy = normalized_copy(value);
+            if (!copy) { request_free(&request); return 2; }
+            size_t length = strlen(copy);
+            while (length && copy[length - 1] == '/') copy[--length] = 0;
+            request.edit_strings[request.edit_string_count++] = copy;
+        }
+        for (size_t i = 0; i < request.edit_count; ++i) {
+            request.edits[i].kind = request.edit_kind;
+            request.edits[i].path = request.edit_strings[request.edit_kind == OH_EDIT_DELETE ? i : 0];
+            request.edits[i].name = request.edit_kind == OH_EDIT_DELETE ? NULL : request.edit_strings[1];
+        }
+        int result = disk ? run_disk(&request) : run_image(&request);
+        request_free(&request);
+        return result;
+    }
     if (remaining < 2 || remaining % 2) { usage(); request_free(&request); return 2; }
     request.count = (size_t)remaining / 2;
     request.sources = calloc(request.count, sizeof(*request.sources));
