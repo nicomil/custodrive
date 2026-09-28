@@ -184,6 +184,9 @@ int oh_ntfs_open(OHNTFSReadBlocks reader, void *context, uint64_t device_size,
     ctx->device_size = device_size;
     atomic_init(&ctx->write_attempts, 0);
     pthread_mutex_init(&ctx->lock, NULL);
+    #ifdef OPENHDD_TESTING
+    if (!getenv("OPENHDD_TEST_NTFS_LOG"))
+    #endif
     ntfs_log_set_handler(ntfs_log_handler_null);
     struct ntfs_device *device = ntfs_device_alloc("OpenHDD read-only", 0,
                                                    &read_only_device, ctx);
@@ -394,6 +397,71 @@ int oh_ntfs_name_exists_nocase(OHNTFSVolume *ctx, uint64_t directory,
     if (dir && ntfs_inode_close(dir) && !error) error = EIO;
     pthread_mutex_unlock(&ctx->lock);
     free(wide);
+    return error;
+}
+
+int oh_ntfs_name_key(OHNTFSVolume *ctx, const char *name, uint16_t **key,
+                     int *length)
+{
+    if (!ctx || !name || !key || !length) return EINVAL;
+    ntfschar *wide = NULL;
+    int count = ntfs_mbstoucs(name, &wide);
+    if (count <= 0 || count > 255) { free(wide); return EINVAL; }
+    ntfs_name_upcase(wide, (u32)count, ctx->ntfs->upcase, ctx->ntfs->upcase_len);
+    *key = (uint16_t *)wide;
+    *length = count;
+    return 0;
+}
+
+struct key_listing {
+    ntfs_volume *ntfs;
+    OHNTFSKeyCallback callback;
+    void *context;
+    int error;
+    uint32_t count;
+};
+
+static int key_entry(void *opaque, const ntfschar *name, int name_length,
+                     int name_type, s64 position, MFT_REF mref, unsigned type)
+{
+    (void)position;
+    struct key_listing *listing = opaque;
+    if (name_type == FILE_NAME_DOS || name_length <= 0 || name_length > 255) return 0;
+    if ((name_length == 1 && le16_to_cpu(name[0]) == '.') ||
+        (name_length == 2 && le16_to_cpu(name[0]) == '.' && le16_to_cpu(name[1]) == '.'))
+        return 0;
+    if (++listing->count > 1000000) { listing->error = EOVERFLOW; return 1; }
+    ntfschar original[255], key[255];
+    memcpy(original, name, (size_t)name_length * sizeof(ntfschar));
+    memcpy(key, name, (size_t)name_length * sizeof(ntfschar));
+    ntfs_name_upcase(key, (u32)name_length, listing->ntfs->upcase, listing->ntfs->upcase_len);
+    int cb = listing->callback(listing->context, (const uint16_t *)key,
+                               (const uint16_t *)original, name_length,
+                               MREF(mref), type == NTFS_DT_DIR);
+    if (cb) { listing->error = cb > 0 ? cb : EIO; return 1; }
+    return 0;
+}
+
+int oh_ntfs_list_keys(OHNTFSVolume *ctx, uint64_t directory,
+                      OHNTFSKeyCallback callback, void *context)
+{
+    if (!ctx || !callback || directory > 0x0000ffffffffffffULL) return EINVAL;
+    pthread_mutex_lock(&ctx->lock);
+    ntfs_inode *dir = ntfs_inode_open(ctx->ntfs, directory);
+    int error = 0;
+    if (!dir) error = errno ? errno : EIO;
+    else if (!(dir->mrec->flags & MFT_RECORD_IS_DIRECTORY)) error = ENOTDIR;
+    if (!error) {
+        struct key_listing listing = { .ntfs = ctx->ntfs, .callback = callback,
+                                       .context = context };
+        s64 position = 0;
+        errno = 0;
+        int result = ntfs_readdir(dir, &position, &listing, key_entry);
+        if (listing.error) error = listing.error;
+        else if (result) error = errno ? errno : EIO;
+    }
+    if (dir && ntfs_inode_close(dir) && !error) error = EIO;
+    pthread_mutex_unlock(&ctx->lock);
     return error;
 }
 

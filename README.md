@@ -25,7 +25,13 @@ open Build/OpenHDDLocal.app
    permessi dell'app.
 4. Segui la barra: mostra fase (scrittura, sincronizzazione, verifica,
    pubblicazione, chiusura), file corrente, velocità misurata e tempo
-   rimanente per l'intera operazione.
+   rimanente per l'intera operazione. Anche la preparazione dell'elenco di
+   cartelle grandi mostra quanti file ha trovato.
+   **Annulla** ferma la copia in sicurezza:
+   - durante la scrittura o la verifica, il lotto in corso viene tolto
+     (file temporanei e cartelle appena create) e il disco resta pulito;
+   - i lotti già completati restano sul disco, verificati;
+   - quando la pubblicazione dei nomi è già iniziata, la copia termina.
 5. Attendi il messaggio **«Copia completata e verificata»**: il disco torna
    montato in sola lettura e i file nuovi sono visibili nel Finder. Poi usa
    **Espelli** prima di scollegarlo.
@@ -89,7 +95,9 @@ Dal menu **Modifica** dell'app:
   finire dentro se stessa, e il nome non deve esistere già nella
   destinazione. Se lo spostamento si interrompe, dopo `chkdsk` un elemento
   può comparire in entrambe le cartelle: il contenuto è lo stesso, basta
-  eliminare il nome in più.
+  eliminare il nome in più. Non serve farlo a mano: dopo `chkdsk`, la volta
+  successiva OpenHDD completa da solo spostamenti e rinomine interrotti
+  usando il diario.
 - **Elimina…**: file e cartelle, queste con tutto il contenuto. Sul disco NTFS
   non c'è un Cestino: l'app chiede conferma e l'operazione non si annulla.
 

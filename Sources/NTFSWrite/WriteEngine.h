@@ -83,6 +83,13 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
                    size_t *failed_index, int *failure_stage,
                    uint32_t *safety_warnings, size_t *removed_pending);
 
+/* Asks a running copy to stop; safe to call from a signal handler. While
+   files are being written or verified the batch is undone (temporaries and
+   the folders it created are removed, the volume is left clean) and the
+   copy returns ECANCELED; once publishing has started it completes. */
+void oh_request_cancel(void);
+int oh_cancel_requested(void);
+
 /* Short description of the last low-level failure, or "" when none. */
 const char *oh_last_error(void);
 int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,

@@ -123,6 +123,23 @@ same "$img" /Molti/f13.bin "$fixture/many/f13.bin" batch-fail
 exists "$img" /Molti/f14.bin && fail "refused batch left a file"
 clean "$img" batch-fail
 
+# Many small files in one batch: every temporary name goes into the root,
+# whose index outgrows the index root after about fifteen entries.
+mkdir -p "$fixture/small"
+: > "$fixture/small.manifest"
+record D Piccoli >> "$fixture/small.manifest"
+n=1
+while [ "$n" -le 300 ]; do
+  head -c $((n * 13)) /dev/urandom > "$fixture/small/s$n.jpg"
+  record F "$fixture/small/s$n.jpg" Piccoli "s$n.jpg" 0 >> "$fixture/small.manifest"
+  n=$((n + 1))
+done
+img=$(fresh small)
+"$tool" --image "$img" --manifest "$fixture/small.manifest" > "$fixture/out.log" 2>&1 ||
+  { cat "$fixture/out.log" >&2; fail "300 small files in one batch"; }
+for n in 1 15 16 17 150 300; do same "$img" "/Piccoli/s$n.jpg" "$fixture/small/s$n.jpg" small; done
+clean "$img" small
+
 # Replace: a single file, a file inside a folder via the manifest.
 random "$fixture/new-keep.bin" 1500
 img=$(fresh replace)
@@ -213,4 +230,69 @@ OPENHDD_TEST_ABORT_AT_STAGE=3 "$tool" --image "$img" --move Esistente keep.bin >
 set -e
 state "$img" | grep -q '^dirty=1 ' || fail "interrupted move not marked dirty"
 
-echo 'PASS: folder copies (nested, empty, merged), refusals unchanged, batches with one progress bar, replace with journal recovery at every interruption point, moves of files and folders'
+# Cancel (SIGINT) while a batch is written: the batch is undone, new
+# folders removed, earlier batches kept, the volume clean.
+mkdir -p "$fixture/big"
+: > "$fixture/cancel.manifest"
+record D Annullata D Annullata/Sotto >> "$fixture/cancel.manifest"
+n=1
+while [ "$n" -le 9 ]; do
+  random "$fixture/big/b$n.bin" 3000
+  record F "$fixture/big/b$n.bin" Annullata/Sotto "b$n.bin" 0 >> "$fixture/cancel.manifest"
+  n=$((n + 1))
+done
+cancel_copy() { # image batch-size delay
+  OPENHDD_TEST_BATCH_FILES=$2 OPENHDD_TEST_SLOW_WRITE_MS=30 \
+    "$tool" --image "$1" --manifest "$fixture/cancel.manifest" > "$fixture/cancel.log" 2>&1 &
+  pid=$!
+  sleep "$3"
+  kill -INT "$pid" 2>/dev/null || true
+  set +e
+  wait "$pid"
+  code=$?
+  set -e
+  [ "$code" -ne 0 ] || fail "cancelled copy reported success (too fast?)"
+  grep -q 'Cancelled:' "$fixture/cancel.log" || { cat "$fixture/cancel.log" >&2; fail "no cancel message"; }
+  clean "$1" cancel
+  no_leftovers "$1" cancel
+  keep_intact "$1" cancel
+}
+img=$(fresh cancel-one)
+cancel_copy "$img" 1000 2
+tree "$img" | grep -q '^Annullata$' && fail "cancelled batch left its new folder"
+img=$(fresh cancel-batches)
+cancel_copy "$img" 3 5
+grep -q 'Earlier batches: [1-9]' "$fixture/cancel.log" || fail "no batch kept before the cancel"
+same "$img" /Annullata/Sotto/b1.bin "$fixture/big/b1.bin" cancel
+exists "$img" /Annullata/Sotto/b9.bin && fail "cancel copied everything"
+
+# A move or rename cut while the entry has both names: after the repair the
+# next session removes the old name (or, for a change of case, keeps one).
+two_names() { # label expect-present expect-absent -- tool arguments
+  label=$1 present=$2 absent=$3; shift 4
+  img=$(fresh "two-$label")
+  "$tool" --image "$img" --mkdir "" Archivio > /dev/null
+  set +e
+  OPENHDD_TEST_ABORT_WITH_TWO_NAMES=1 "$tool" --image "$img" "$@" > /dev/null 2>&1
+  code=$?
+  set -e
+  [ "$code" -eq 86 ] || fail "$label: abort exit $code"
+  state "$img" | grep -q '^dirty=1 ' || fail "$label: not marked dirty"
+  "$build/ntfsprogs/ntfsfix" -d "$img" > /dev/null 2>&1
+  "$tool" --image "$img" --mkdir "" dopo > "$fixture/two.log" 2>&1 ||
+    { cat "$fixture/two.log" >&2; fail "$label: recovery session refused"; }
+  exists "$img" "$present" || fail "$label: $present missing after recovery"
+  [ -z "$absent" ] || ! tree "$img" | grep -qx "$(basename "$absent")" ||
+    ! exists "$img" "$absent" || fail "$label: $absent still present"
+  clean "$img" "$label"
+  no_leftovers "$img" "$label"
+}
+two_names move-file /Archivio/keep.bin /keep.bin -- --move Archivio keep.bin
+same "$img" /Archivio/keep.bin "$fixture/keep.bin" move-file
+two_names move-folder /Archivio/Esistente/x.bin /Esistente/x.bin -- --move Archivio Esistente
+two_names rename /nuovo.bin /keep.bin -- --rename keep.bin nuovo.bin
+same "$img" /nuovo.bin "$fixture/keep.bin" rename
+two_names case /Case.bin "" -- --rename Case.bin CASE.bin
+tree "$img" | grep -qx 'Case.bin' || fail "case: original name not kept"
+
+echo 'PASS: folder copies (nested, empty, merged), 300 small files in one batch, refusals unchanged, batches with one progress bar, replace with journal recovery at every interruption point, moves of files and folders, move and rename recovery from the journal, cancel undoing the batch in progress'

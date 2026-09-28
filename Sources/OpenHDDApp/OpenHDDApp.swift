@@ -167,6 +167,11 @@ final class DiskStore: ObservableObject {
     @Published var copyTitle = ""
     @Published var copyDetail = ""
     @Published var copyRemaining = ""
+    /// Shown while the chosen folders are walked; nil otherwise.
+    @Published var preparing: String?
+    /// True while a copy (not an edit) runs: only copies can be cancelled.
+    @Published var canCancel = false
+    private var scanToken: ScanToken?
     @Published private var statusOverrides: [String: String] = [:]
 
     private let session: DASession
@@ -519,17 +524,49 @@ extension DiskStore {
     private func startCopy(_ sources: [URL], to record: DiskRecord) {
         guard canCopy(record), let destination = chooseDestination(record) else { return }
         busy = true
-        message = "Preparazione dell'elenco dei file…"
+        message = ""
+        preparing = "Preparazione dell'elenco dei file…"
+        let token = ScanToken()
+        scanToken = token
         let mount = record.mountURL
         Task.detached { [store = self] in
-            var scan = CopyScanner.scan(sources, into: destination)
-            if let mount { CopyScanner.compare(&scan, mount: mount) }
+            var scan = CopyScanner.scan(sources, into: destination, token: token) { files, bytes in
+                let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
+                Task { @MainActor in
+                    if store.preparing != nil {
+                        store.preparing = "Preparazione dell'elenco: \(files) file trovati (\(size))…"
+                    }
+                }
+            }
+            if !scan.cancelled, let mount {
+                await MainActor.run { store.preparing = "Confronto con i file già presenti sul disco…" }
+                CopyScanner.compare(&scan, mount: mount)
+            }
             let result = scan
             await MainActor.run {
                 store.busy = false
-                store.message = ""
-                store.confirmCopy(result, destination: destination, record: record)
+                store.preparing = nil
+                store.scanToken = nil
+                if result.cancelled || token.isCancelled {
+                    store.message = "Preparazione annullata: nessuna modifica al disco."
+                } else {
+                    store.message = ""
+                    store.confirmCopy(result, destination: destination, record: record)
+                }
             }
+        }
+    }
+
+    /// Stops the walk through folders, or asks the running copy to stop at
+    /// a safe point (the batch in progress is undone, the disk left clean).
+    func cancelOperation() {
+        if let token = scanToken {
+            token.cancel()
+            preparing = "Annullamento…"
+        } else if canCancel {
+            canCancel = false
+            copyDetail = "Annullamento in corso: i file del lotto in corso vengono rimossi…"
+            NTFSCopyRunner.running.interrupt()
         }
     }
 
@@ -774,6 +811,7 @@ extension DiskStore {
             return
         }
         busy = true
+        canCancel = !editing
         copyProgress = 0
         copyTitle = title
         statusOverrides[record.bsdName] = editing ? "Modifica in corso" : "Trasferimento in corso"
@@ -795,7 +833,7 @@ extension DiskStore {
                 if (progress.phase == 1 || progress.phase == 3), !clock.speed.isEmpty {
                     detail += " · " + clock.speed
                 }
-                self.copyDetail = detail
+                if self.canCancel || editing { self.copyDetail = detail }
                 self.copyRemaining = progress.done >= progress.total ?
                     "Quasi finito" : "Tempo rimanente: " + clock.remaining(progress, now: now).lowercasedFirst
                 self.message = "Non scollegare il disco finché l'operazione non è completata."
@@ -813,6 +851,7 @@ extension DiskStore {
 
     private func finishCopy(_ outcome: CopyOutcome, record: DiskRecord, editing: Bool = false) {
         busy = false
+        canCancel = false
         copyProgress = nil
         copyDetail = ""
         copyRemaining = ""
@@ -823,6 +862,9 @@ extension DiskStore {
         case .cancelled:
             statusOverrides.removeValue(forKey: record.bsdName)
             message = "Operazione annullata: nessuna modifica al disco."
+        case .stopped(let text):
+            statusOverrides.removeValue(forKey: record.bsdName)
+            message = text
         case .failure(let text, let needsWindowsCheck):
             statusOverrides[record.bsdName] = needsWindowsCheck ? "Verifica necessaria" : "Non scritto"
             message = text
@@ -886,12 +928,23 @@ private struct ContentView: View {
             .onDrop(of: [.fileURL], isTargeted: nil) { store.drop($0, on: nil) }
             #endif
             #if OPENHDD_LOCAL
+            if let preparing = store.preparing {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(preparing).font(.callout)
+                    Spacer()
+                    Button("Annulla") { store.cancelOperation() }
+                }
+            }
             if let progress = store.copyProgress {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(store.copyTitle).font(.callout.bold())
                         Spacer()
                         Text("\(Int(progress * 100)) %").font(.callout.monospacedDigit())
+                        if store.canCancel {
+                            Button("Annulla") { store.cancelOperation() }
+                        }
                     }
                     ProgressView(value: progress)
                     Text(store.copyDetail).font(.caption)

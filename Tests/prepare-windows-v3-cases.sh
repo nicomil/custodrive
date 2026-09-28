@@ -116,10 +116,44 @@ case_line v3-abort-move-stage3 repair "found:$O|716800;found:$G|3145728;found:$N
 abort v3-abort-tree-stage3 OPENHDD_TEST_ABORT_AT_STAGE=3 "$tool" --image "$work/v3-abort-tree-stage3.img" --manifest "$work/tree.manifest"
 case_line v3-abort-tree-stage3 repair "$windows"
 
+# v3.1: many small files in one batch (the root index outgrows its index
+# root), a move and a rename cut while the entry has both names (kept for
+# the Mac's journal recovery after chkdsk) and a cancelled copy.
+mkdir -p "$work/small"
+: > "$work/small.manifest"
+record D Piccoli >> "$work/small.manifest"
+small_specs=
+n=1
+while [ "$n" -le 300 ]; do
+  head -c $((n * 11)) /dev/urandom > "$work/small/s$n.jpg"
+  record F "$work/small/s$n.jpg" Piccoli "s$n.jpg" 0 >> "$work/small.manifest"
+  case "$n" in 1|15|16|17|150|300) small_specs="$small_specs;$(h "$work/small/s$n.jpg")|Piccoli\\s$n.jpg" ;; esac
+  n=$((n + 1))
+done
+img="$work/small.img"; cp "$partition" "$img"
+"$tool" --image "$img" --manifest "$work/small.manifest" > /dev/null
+wrap "$img" v31-committed-small
+case_line v31-committed-small clean "$windows$small_specs"
+cp "$partition" "$work/v31-abort-move-twonames.img"
+"$tool" --image "$work/v31-abort-move-twonames.img" --mkdir "" Archivio > /dev/null
+abort v31-abort-move-twonames OPENHDD_TEST_ABORT_WITH_TWO_NAMES=1 "$tool" --image "$work/v31-abort-move-twonames.img" --move Archivio Documenti
+case_line v31-abort-move-twonames repair "$O|old.bin;found:$G|3145728;found:$N|68"
+abort v31-abort-rename-twonames OPENHDD_TEST_ABORT_WITH_TWO_NAMES=1 "$tool" --image "$work/v31-abort-rename-twonames.img" --rename old.bin nuovo.bin
+case_line v31-abort-rename-twonames repair "found:$O|716800;$G|Documenti\\grande.bin;$N|Documenti\\nota.txt"
+img="$work/cancel.img"; cp "$partition" "$img"
+OPENHDD_TEST_SLOW_WRITE_MS=30 "$tool" --image "$img" --manifest "$work/tree.manifest" > /dev/null 2>&1 &
+pid=$!
+sleep 1
+kill -INT "$pid" 2>/dev/null || true
+wait "$pid" || true
+"$tool" --check-image "$img" | grep -q '^dirty=0 .* pending=0 code=0'
+wrap "$img" v31-cancelled
+case_line v31-cancelled clean "$windows;absent:Album"
+
 # Power-cut samples. The campaign adds its own fixture (target.bin for a
 # replacement, Foto/Estate/b.bin for a move) to the Windows base; the old
 # target.bin content must never be lost.
-for spec in replace:512 replace:4096 move:512 tree:512; do
+for spec in replace:512 replace:4096 move:512 tree:512 rename:512; do
   op=${spec%:*}; sector=${spec#*:}
   OPENHDD_CAMPAIGN_EDIT=$op OPENHDD_TEST_POWERCUT_SECTOR=$sector OPENHDD_CAMPAIGN_KEEP="$work/fixture-$op-$sector" \
     "$root/Tests/run-powercut-campaign.sh" "$partition" "$work/samples-$op-$sector" 1 | tail -3

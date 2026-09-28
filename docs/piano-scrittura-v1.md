@@ -238,6 +238,73 @@ Il Mac trova gli hash corretti. Windows trova il volume sano, `chkdsk` pulito,
 elenchi in forma decomposta (NFD). I confronti di nomi del motore ora
 avvengono in forma canonica.
 
+## v3.1 — annulla, avanzamento della preparazione, diario per sposta e rinomina, velocità
+
+**Annulla.** L'app manda SIGINT allo strumento; la CLI lo intercetta per
+l'intera sessione dopo la conferma. Il motore controlla la richiesta:
+- **tra un lotto e l'altro**: si ferma, e i lotti completati restano;
+- **durante scrittura o verifica** (niente è ancora pubblicato): annulla il
+  lotto. Rimuove le cartelle create dal lotto (vuote, perché i file
+  aspettano nella radice) e i temporanei, poi toglie il dirty bit e
+  controlla che il volume sia pulito;
+- **dalla pubblicazione in poi**: la richiesta viene ignorata e il lotto si
+  completa.
+
+Se l'annullamento stesso fallisce, il volume resta marcato come dopo
+qualunque errore. Una richiesta arrivata prima che lo strumento sia partito
+viene conservata e consegnata appena parte.
+
+**Preparazione.** La visita delle cartelle aggiorna il conteggio dei file e
+dei byte trovati, e si può annullare.
+
+**Diario per sposta e rinomina.** Prima delle modifiche viene scritto
+`.OpenHDD-journal` con righe tipizzate: `L` (da, a) per spostamenti e
+rinomine, `C` (cartella, nome temporaneo, nome finale) per il solo cambio di
+maiuscole; le sostituzioni usano `R`. Dopo `chkdsk`, la sessione successiva:
+- `L`: toglie il nome vecchio se entrambi i nomi portano allo stesso
+  elemento;
+- `C`: toglie il nome temporaneo, oppure lo trasforma nel nome finale se non
+  resta altro.
+
+I temporanei già sistemati dal diario non vengono cancellati una seconda
+volta.
+
+**Velocità con cartelle grandi.** I nomi di una cartella vengono letti una
+sola volta: chiavi UTF-16 in maiuscolo con la tabella upcase del volume, la
+stessa regola di NTFS, ordinate per una ricerca binaria. Prima si rileggeva
+la cartella intera per ogni file. Misura su immagine: 3000 file piccoli in
+una cartella in 0,6 s, poi altri 2000 nella stessa cartella in 0,4 s.
+
+**Bug trovato e corretto (presente dalla v1).** `write_all` teneva aperta la
+radice per tutto il lotto. Dopo circa 15 nomi temporanei l'indice della
+radice esce dall'index root, e la chiusura del file successivo non trovava
+più la propria voce ("Index lookup failed, inode 5", EIO). La copia si
+fermava in sicurezza, con il volume marcato, ma non riusciva a copiare molti
+file per lotto. Ora la radice viene aperta e chiusa attorno a ogni
+creazione. Regressione: 300 file piccoli in un lotto solo.
+
+**Collaudo v3.1.**
+- `run-v3-probe.sh`: annullamento a metà lotto e tra un lotto e l'altro,
+  recupero dal diario di spostamenti (file e cartella), rinomine e cambi di
+  maiuscole interrotti con due nomi. **PASS**, insieme ai probe v1 e v2.
+- Campagne di taglio corrente su tutte e 7 le operazioni (copia, cartelle,
+  sostituzione, spostamento, rinomina, nuova cartella, eliminazione), a
+  512 B e 4 KiB, 716 tagli in tutto: **0 violazioni**.
+- Windows, 15 casi nuovi: **15/15 PASS**.
+  - 300 file piccoli copiati: `chkdsk` pulito.
+  - Copia annullata: volume pulito, niente di aggiunto.
+  - Spostamento e rinomina interrotti con due nomi: riparati da
+    `chkdsk /f`.
+  - 11 tagli durante una rinomina: riparati da `chkdsk /f`.
+- Giro Windows → Mac sui due casi con due nomi: dopo `chkdsk`, Windows mostra
+  la cartella spostata in entrambe le posizioni e il file rinominato con
+  entrambi i nomi. La sessione successiva di OpenHDD toglie il nome vecchio e
+  il volume resta pulito, con contenuti intatti.
+- Chiavetta reale: una copia annullata dall'app a metà scrittura dà
+  «Copia annullata, il disco è pulito». Sul Mac non resta nessun residuo
+  `.OpenHDD`, i file di controllo sono intatti e la copia precedente
+  (390 MB) è integra.
+
 ## Fase 2
 
 La specifica transazionale e il laboratorio `$LogFile` (`Tests/windows/*journal*`,

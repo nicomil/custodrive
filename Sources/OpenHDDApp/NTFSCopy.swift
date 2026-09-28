@@ -69,8 +69,27 @@ final class DroppedURLs: @unchecked Sendable {
     }
 }
 
+/// Lets the user stop a long walk through folders.
+final class ScanToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    func cancel() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+}
+
 /// What a walk through the chosen files and folders found.
 struct CopyScan {
+    var cancelled = false
     var entries: [CopyEntry] = []
     var folders: [String] = []
     var problems: [String] = []
@@ -96,8 +115,15 @@ enum CopyScanner {
 
     /// Walks the sources (files and whole folders) without following
     /// symbolic links, and maps them into `destination` on the volume.
-    static func scan(_ sources: [URL], into destination: String) -> CopyScan {
+    static func scan(_ sources: [URL], into destination: String, token: ScanToken? = nil,
+                     progress: ((Int, UInt64) -> Void)? = nil) -> CopyScan {
         var scan = CopyScan()
+        var bytes: UInt64 = 0
+        func counted() -> Bool {
+            if scan.entries.count % 250 == 0 { progress?(scan.entries.count, bytes) }
+            if token?.isCancelled == true { scan.cancelled = true; return false }
+            return true
+        }
         var names: [String: Set<String>] = [:]
         func claim(_ folder: String, _ name: String) -> Bool {
             if names[folder, default: []].insert(fold(name)).inserted { return true }
@@ -117,6 +143,7 @@ enum CopyScanner {
                 if claim(destination, name) {
                     scan.entries.append(CopyEntry(source: url, folder: destination, name: name,
                                                   size: UInt64(values?.fileSize ?? 0)))
+                    bytes += UInt64(values?.fileSize ?? 0)
                 }
                 continue
             }
@@ -131,6 +158,7 @@ enum CopyScanner {
             else { scan.problems.append("«\(name)»: cartella non leggibile"); continue }
             let rootPath = url.path
             for case let fileURL as URL in walker {
+                if token?.isCancelled == true { scan.cancelled = true; return scan }
                 let relative = String(fileURL.path.dropFirst(rootPath.count))
                     .split(separator: "/").map { NTFSCopyRunner.normalized(String($0)) }
                 guard let leaf = relative.last else { continue }
@@ -152,6 +180,8 @@ enum CopyScanner {
                     if claim(folder, leaf) {
                         scan.entries.append(CopyEntry(source: fileURL, folder: folder, name: leaf,
                                                       size: UInt64(info?.fileSize ?? 0)))
+                        bytes += UInt64(info?.fileSize ?? 0)
+                        if !counted() { return scan }
                     }
                 } else {
                     scan.skipped.append(shown)
@@ -319,12 +349,40 @@ struct EditRequest {
 enum CopyOutcome {
     case success(String)
     case cancelled
+    /// The user stopped a copy; the volume is clean.
+    case stopped(String)
     case failure(String, needsWindowsCheck: Bool)
 }
 
 /// Runs the bundled OpenHDDCopy tool. The tool owns every safety rule
 /// (preflight, dirty mark, verification); the app only prepares the request.
+/// The tool currently running, so the user can ask it to stop.
+final class RunningTool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var interruptPending = false
+
+    /// Registers the running tool; a stop asked just before it started is
+    /// delivered now.
+    func set(_ process: Process?) {
+        lock.lock()
+        self.process = process
+        if let process, interruptPending { process.interrupt() }
+        interruptPending = false
+        lock.unlock()
+    }
+
+    /// SIGINT: the tool stops at a safe point and cleans up after itself.
+    func interrupt() {
+        lock.lock()
+        if let process { process.interrupt() } else { interruptPending = true }
+        lock.unlock()
+    }
+}
+
 enum NTFSCopyRunner {
+    static let running = RunningTool()
+
     static var toolURL: URL? {
         Bundle.main.url(forResource: "OpenHDDCopy", withExtension: nil)
     }
@@ -400,9 +458,26 @@ enum NTFSCopyRunner {
             return .failure("Avvio dell'operazione non riuscito: \(error.localizedDescription)",
                             needsWindowsCheck: false)
         }
+        running.set(process)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        running.set(nil)
         let text = String(decoding: data, as: UTF8.self)
+        // Stopped before it installed its handler: that is before the disk
+        // was unmounted or touched.
+        if process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGINT {
+            return .stopped("Copia annullata prima di iniziare: nessuna modifica al disco.")
+        }
+        if text.contains("Cancelled:") {
+            var message = "Copia annullata: il disco è pulito."
+            if let range = text.range(of: "Earlier batches: ") {
+                let count = text[range.upperBound...].prefix(while: \.isNumber)
+                message += " I primi \(count) file erano già stati copiati e verificati e restano sul disco; gli altri non sono stati aggiunti."
+            } else {
+                message += " Nessun file è stato aggiunto."
+            }
+            return .stopped(message)
+        }
         if text.contains("(-128)") || text.contains("authorization for the drive was denied") {
             return .cancelled
         }

@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 
 /* A local marker survives process death even if NTFS lost its pending name
@@ -524,6 +525,11 @@ static void close_sources(OHCopyItem *items, size_t count)
 static void explain_failure(int code, int stage, size_t index, size_t count,
                             uint32_t warnings)
 {
+    if (code == ECANCELED && stage == 1) {
+        fputs("Cancelled: the files of the batch in progress were removed; the "
+              "volume is clean.\n", stderr);
+        return;
+    }
     if (code == EINPROGRESS) {
         fputs("Refused: unfinished OpenHDD transfer found. Check the volume on "
               "Windows (chkdsk X: /f); no new copy started.\n", stderr);
@@ -639,6 +645,24 @@ static void report_batch(void *opaque, int phase, size_t index, size_t count,
                     batch->file_total, overall, batch->unit_total);
 }
 
+/* Ctrl-C (or the app's Cancel, which sends SIGINT) asks the engine to stop
+   at a safe point instead of killing the process mid-write. */
+static void request_cancel(int signal_number)
+{
+    (void)signal_number;
+    oh_request_cancel();
+}
+
+/* Installed for the whole session once it is confirmed: a request to stop
+   during unmount or authorization is honoured by the engine before it
+   writes anything, and the volume is remounted as usual. */
+static void install_cancel_handler(void)
+{
+    struct sigaction cancel = { .sa_handler = request_cancel, .sa_flags = SA_RESTART };
+    sigemptyset(&cancel.sa_mask);
+    sigaction(SIGINT, &cancel, NULL);
+}
+
 static int run_engine(const CopyRequest *request, long owner_uid, int fd,
                       uint64_t size, int is_device, ProgressFile *progress,
                       size_t *failed, int *stage, uint32_t *warnings,
@@ -662,6 +686,15 @@ static int run_engine(const CopyRequest *request, long owner_uid, int fd,
     do {
         size_t end = batch_end(request, start);
         size_t batch_removed = 0;
+        if (oh_cancel_requested()) {
+            *stage = 1;
+            *failed = start;
+            code = ECANCELED;
+            if (start)
+                fprintf(stderr, "Earlier batches: %zu file(s) were already copied "
+                                "and verified; they stay on the volume.\n", start);
+            break;
+        }
         if (open_sources(request, owner_uid, items, start, end - start)) {
             close_sources(items, end - start);
             *stage = 1;
@@ -712,6 +745,7 @@ static int run_image(CopyRequest *request)
     uint32_t warnings = 0;
     size_t failed = 0;
     const char *path = request->target;
+    if (!request->edit_kind) install_cancel_handler();
     if (lstat(path, &before) || !private_image(path, &before)) {
         fputs("Refused: target must be a private regular image.\n", stderr);
         return 1;
@@ -880,6 +914,7 @@ static int run_disk(CopyRequest *request)
         fputs("Not confirmed; nothing written.\n", stderr);
         goto out;
     }
+    if (!request->edit_kind) install_cancel_handler();
     if (!request->edit_kind && check_sources(request, owner_uid)) goto out;
     if (disk_unmount(lease.whole)) {
         fputs("Refused: normal unmount failed (a file on the drive may be open); "

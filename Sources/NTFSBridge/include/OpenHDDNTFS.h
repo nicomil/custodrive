@@ -43,6 +43,16 @@ int oh_ntfs_list(OHNTFSVolume *volume, uint64_t directory,
 int oh_ntfs_name_exists_nocase(OHNTFSVolume *volume, uint64_t directory,
                                const char *utf8_name, int *exists);
 /* Resolves a '/'-separated path of existing directories from the root. */
+/* Names as NTFS compares them ignoring case: UTF-16 upcased with the
+   volume's own table. The listing does not open the entries' inodes, so a
+   whole folder is indexed in one pass. */
+typedef int (*OHNTFSKeyCallback)(void *context, const uint16_t *key,
+                                 const uint16_t *name, int length,
+                                 uint64_t inode, int is_directory);
+int oh_ntfs_name_key(OHNTFSVolume *volume, const char *utf8_name,
+                     uint16_t **key, int *length);
+int oh_ntfs_list_keys(OHNTFSVolume *volume, uint64_t directory,
+                      OHNTFSKeyCallback callback, void *context);
 int oh_ntfs_resolve_directory(OHNTFSVolume *volume, const char *utf8_path,
                               uint64_t *inode);
 int oh_ntfs_free_bytes(OHNTFSVolume *volume, uint64_t *out_bytes);
