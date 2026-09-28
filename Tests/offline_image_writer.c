@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <locale.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 
 #include <ntfs-3g/attrib.h>
 #include <ntfs-3g/dir.h>
+#include <ntfs-3g/device_io.h>
 #include <ntfs-3g/inode.h>
 #include <ntfs-3g/layout.h>
 #include <ntfs-3g/logging.h>
@@ -22,6 +24,293 @@
 #include <ntfs-3g/volume.h>
 
 enum { CHUNK = 65536 };
+
+/*
+ * Test-only volatile device cache. Writes acknowledged by pwrite stay in
+ * memory until sync; selected writes may reach the image earlier. _exit()
+ * drops every cached write, unlike merely killing a process that wrote into
+ * the host page cache. This harness only runs after the private-image checks.
+ */
+enum { SIM_CACHE_LIMIT = 256 * 1024 * 1024 };
+
+typedef struct {
+    s64 offset;
+    s64 length;
+    unsigned char *bytes;
+    s64 durable_prefix;
+} SimWrite;
+
+typedef struct {
+    struct ntfs_device_operations *base;
+    SimWrite *writes;
+    size_t write_count;
+    size_t write_capacity;
+    uint64_t accepted_bytes;
+    uint64_t write_calls;
+    uint64_t sync_calls;
+    uint64_t persist_every;
+    uint64_t crash_after_write;
+    uint64_t partial_persist_at;
+    uint64_t partial_persist_bytes;
+    uint64_t crash_during_sync_after;
+    int reverse_flush;
+    int trace_fd;
+    int active;
+} CacheSim;
+
+static CacheSim cache_sim = {.trace_fd = -1};
+
+static uint64_t positive_env(const char *name)
+{
+    const char *value = getenv(name);
+    if (!value || !*value) return 0;
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    return !errno && end != value && !*end ? (uint64_t)parsed : 0;
+}
+
+static void sim_trace(const char *format, ...)
+{
+    if (cache_sim.trace_fd < 0) return;
+    char line[256];
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    if (length <= 0 || (size_t)length >= sizeof(line)) return;
+    size_t done = 0;
+    while (done < (size_t)length) {
+        ssize_t n = write(cache_sim.trace_fd, line + done,
+                          (size_t)length - done);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return;
+        done += (size_t)n;
+    }
+    (void)fsync(cache_sim.trace_fd);
+}
+
+static int sim_persist_bytes(struct ntfs_device *device, SimWrite *entry,
+                             s64 length)
+{
+    if (length < 0 || length > entry->length) { errno = EINVAL; return -1; }
+    for (s64 done = entry->durable_prefix; done < length; ) {
+        s64 n = cache_sim.base->pwrite(device, entry->bytes + done,
+                                       length - done, entry->offset + done);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { if (!n) errno = EIO; return -1; }
+        done += n;
+    }
+    if (length > entry->durable_prefix) entry->durable_prefix = length;
+    return 0;
+}
+
+static void sim_apply_overlay(void *buffer, s64 count, s64 offset)
+{
+    if (count <= 0) return;
+    s64 end = offset + count;
+    for (size_t i = 0; i < cache_sim.write_count; ++i) {
+        SimWrite *entry = &cache_sim.writes[i];
+        s64 entry_end = entry->offset + entry->length;
+        s64 overlap_start = offset > entry->offset ? offset : entry->offset;
+        s64 overlap_end = end < entry_end ? end : entry_end;
+        if (overlap_start < overlap_end)
+            memcpy((unsigned char *)buffer + (overlap_start - offset),
+                   entry->bytes + (overlap_start - entry->offset),
+                   (size_t)(overlap_end - overlap_start));
+    }
+}
+
+static s64 sim_pread(struct ntfs_device *device, void *buffer, s64 count,
+                     s64 offset)
+{
+    s64 result = cache_sim.base->pread(device, buffer, count, offset);
+    if (result > 0) sim_apply_overlay(buffer, result, offset);
+    return result;
+}
+
+static int sim_reserve_write(void)
+{
+    if (cache_sim.write_count < cache_sim.write_capacity) return 0;
+    size_t next = cache_sim.write_capacity ? cache_sim.write_capacity * 2 : 32;
+    if (next < cache_sim.write_capacity || next > SIZE_MAX / sizeof(SimWrite)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    SimWrite *grown = realloc(cache_sim.writes, next * sizeof(SimWrite));
+    if (!grown) return -1;
+    cache_sim.writes = grown;
+    cache_sim.write_capacity = next;
+    return 0;
+}
+
+static s64 sim_pwrite(struct ntfs_device *device, const void *buffer,
+                      s64 count, s64 offset)
+{
+    if (count < 0 || offset < 0 ||
+        (uint64_t)count > SIM_CACHE_LIMIT - cache_sim.accepted_bytes) {
+        errno = ENOMEM;
+        return -1;
+    }
+    if (sim_reserve_write()) return -1;
+    unsigned char *copy = malloc((size_t)(count ? count : 1));
+    if (!copy) return -1;
+    if (count) memcpy(copy, buffer, (size_t)count);
+    SimWrite *entry = &cache_sim.writes[cache_sim.write_count++];
+    *entry = (SimWrite){.offset = offset, .length = count, .bytes = copy};
+    cache_sim.accepted_bytes += (uint64_t)count;
+    uint64_t call = ++cache_sim.write_calls;
+    sim_trace("ACCEPT write=%llu offset=%lld length=%lld\n",
+              (unsigned long long)call, (long long)offset, (long long)count);
+
+    s64 persist_length = 0;
+    if (cache_sim.persist_every && call % cache_sim.persist_every == 0)
+        persist_length = count;
+    if (cache_sim.partial_persist_at == call) {
+        s64 partial = (s64)cache_sim.partial_persist_bytes;
+        if (partial > count) partial = count;
+        if (partial > persist_length) persist_length = partial;
+    }
+    if (persist_length && sim_persist_bytes(device, entry, persist_length))
+        return -1;
+    if (persist_length && cache_sim.base->sync(device)) return -1;
+    if (persist_length)
+        sim_trace("PERSIST write=%llu bytes=%lld\n",
+                  (unsigned long long)call, (long long)persist_length);
+
+    if (cache_sim.crash_after_write == call) {
+        sim_trace("POWER_LOSS after-write=%llu\n", (unsigned long long)call);
+        _exit(86);
+    }
+    return count;
+}
+
+static int sim_sync(struct ntfs_device *device)
+{
+    uint64_t sync_number = ++cache_sim.sync_calls;
+    sim_trace("SYNC_BEGIN sync=%llu queued=%zu order=%s\n",
+              (unsigned long long)sync_number, cache_sim.write_count,
+              cache_sim.reverse_flush ? "reverse" : "forward");
+    uint64_t persisted_in_sync = 0;
+    for (size_t step = 0; step < cache_sim.write_count; ++step) {
+        size_t index = cache_sim.reverse_flush ?
+            cache_sim.write_count - step - 1 : step;
+        SimWrite *entry = &cache_sim.writes[index];
+        if (sim_persist_bytes(device, entry, entry->length)) return -1;
+        ++persisted_in_sync;
+        if (cache_sim.crash_during_sync_after == persisted_in_sync) {
+            if (cache_sim.base->sync(device)) return -1;
+            sim_trace("POWER_LOSS during-sync=%llu after=%llu\n",
+                      (unsigned long long)sync_number,
+                      (unsigned long long)persisted_in_sync);
+            _exit(86);
+        }
+    }
+    if (cache_sim.base->sync(device)) return -1;
+    sim_trace("SYNC_END sync=%llu persisted=%zu\n",
+              (unsigned long long)sync_number, cache_sim.write_count);
+    for (size_t i = 0; i < cache_sim.write_count; ++i)
+        free(cache_sim.writes[i].bytes);
+    cache_sim.write_count = 0;
+    cache_sim.accepted_bytes = 0;
+    return 0;
+}
+
+static s64 sim_read(struct ntfs_device *device, void *buffer, s64 count)
+{
+    s64 offset = cache_sim.base->seek(device, 0, SEEK_CUR);
+    if (offset < 0) return -1;
+    s64 result = cache_sim.base->read(device, buffer, count);
+    if (result > 0) sim_apply_overlay(buffer, result, offset);
+    return result;
+}
+
+static s64 sim_write(struct ntfs_device *device, const void *buffer, s64 count)
+{
+    s64 offset = cache_sim.base->seek(device, 0, SEEK_CUR);
+    if (offset < 0) return -1;
+    s64 result = sim_pwrite(device, buffer, count, offset);
+    if (result > 0 && cache_sim.base->seek(device, offset + result, SEEK_SET) < 0)
+        return -1;
+    return result;
+}
+
+static int sim_open(struct ntfs_device *device, int flags)
+{
+    return cache_sim.base->open(device, flags);
+}
+
+static int sim_close(struct ntfs_device *device)
+{
+    if (sim_sync(device)) return -1;
+    return cache_sim.base->close(device);
+}
+
+static s64 sim_seek(struct ntfs_device *device, s64 offset, int whence)
+{
+    return cache_sim.base->seek(device, offset, whence);
+}
+
+static int sim_stat(struct ntfs_device *device, struct stat *out)
+{
+    return cache_sim.base->stat(device, out);
+}
+
+static int sim_ioctl(struct ntfs_device *device, unsigned long request,
+                     void *argument)
+{
+    return cache_sim.base->ioctl(device, request, argument);
+}
+
+static struct ntfs_device_operations simulated_device_ops = {
+    .open = sim_open,
+    .close = sim_close,
+    .seek = sim_seek,
+    .read = sim_read,
+    .write = sim_write,
+    .pread = sim_pread,
+    .pwrite = sim_pwrite,
+    .sync = sim_sync,
+    .stat = sim_stat,
+    .ioctl = sim_ioctl
+};
+
+static int sim_attach(ntfs_volume *volume, const char *trace_path)
+{
+    const char *enabled = getenv("OPENHDD_SIMULATE_CACHE");
+    if (!enabled || strcmp(enabled, "1")) return 0;
+    cache_sim.base = volume->dev->d_ops;
+    cache_sim.persist_every = positive_env("OPENHDD_SIM_PERSIST_EVERY");
+    cache_sim.crash_after_write = positive_env("OPENHDD_SIM_CRASH_AFTER_PWRITE");
+    cache_sim.partial_persist_at = positive_env("OPENHDD_SIM_PARTIAL_PERSIST_AT");
+    cache_sim.partial_persist_bytes = positive_env("OPENHDD_SIM_PARTIAL_PERSIST_BYTES");
+    cache_sim.crash_during_sync_after = positive_env("OPENHDD_SIM_CRASH_DURING_SYNC_AFTER");
+    const char *order = getenv("OPENHDD_SIM_FLUSH_ORDER");
+    cache_sim.reverse_flush = order && !strcmp(order, "reverse");
+    if (trace_path && *trace_path) {
+        cache_sim.trace_fd = open(trace_path, O_WRONLY | O_CREAT | O_EXCL |
+                                  O_NOFOLLOW, 0600);
+        if (cache_sim.trace_fd < 0) return -1;
+    }
+    cache_sim.active = 1;
+    volume->dev->d_ops = &simulated_device_ops;
+    sim_trace("CACHE_SIM attached persist-every=%llu flush=%s\n",
+              (unsigned long long)cache_sim.persist_every,
+              cache_sim.reverse_flush ? "reverse" : "forward");
+    return 0;
+}
+
+static void sim_destroy(void)
+{
+    for (size_t i = 0; i < cache_sim.write_count; ++i)
+        free(cache_sim.writes[i].bytes);
+    free(cache_sim.writes);
+    cache_sim.writes = NULL;
+    cache_sim.write_count = cache_sim.write_capacity = 0;
+    if (cache_sim.trace_fd >= 0) close(cache_sim.trace_fd);
+    cache_sim.trace_fd = -1;
+    cache_sim.active = 0;
+}
 
 static int64_t read_block(void *opaque, uint64_t offset, void *buffer,
                           uint64_t length)
@@ -186,6 +475,7 @@ int main(int argc, char **argv)
     volume = ntfs_mount(argv[1], NTFS_MNT_EXCLUSIVE);
     if (!volume || (volume->flags & VOLUME_IS_DIRTY) || NVolReadOnly(volume))
         goto out;
+    if (sim_attach(volume, getenv("OPENHDD_SIM_TRACE"))) goto out;
     struct stat ntfs_handle;
     if (volume->dev->d_ops->stat(volume->dev, &ntfs_handle) ||
         !S_ISREG(ntfs_handle.st_mode) ||
@@ -274,6 +564,7 @@ out:
     if (volume) ntfs_umount(volume, FALSE);
     if (image_fd >= 0) close(image_fd);
     if (source >= 0) close(source);
+    sim_destroy();
     if (status) fprintf(stderr, "write or verification failed; stage=%d errno=%d; image needs inspection\n", stage, errno);
     else puts("PASS: image-only write, close, read-only reopen and SHA-256 verification");
     return status;

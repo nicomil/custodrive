@@ -1,35 +1,8 @@
-# Prova controllata della copia NTFS da Mac
+# Registro storico delle prove di copia NTFS
 
-**Solo unità USB sacrificabile, vuota o con backup verificato.** La prova modifica davvero NTFS. Non usarla su dati importanti. Il programma sperimentale è separato da OpenHDD Local: il pulsante di scrittura nell'app resta assente finché la prova fisica e il controllo Windows non passano.
+**Le prove fisiche qui sotto sono concluse.** Lo scollegamento durante una copia ha lasciato `$Bitmap` incoerente. La build corrente di `OpenHDDCopy` rifiuta `--disk` prima di aprire il dispositivo; accetta solo immagini private per la ricerca. L'app resta in sola lettura. Risultati e limiti sono nel [rapporto forense](analisi-guasto-bitmap-ntfs-2026-09-27.md).
 
-## Preparazione
-
-1. Su Windows, identifica la lettera dell'unità. Esegui `chkdsk X:` senza `/f` e salva l'esito. Espelli normalmente l'unità. Non usare una partizione ibernata o dirty.
-2. Collega l'unità al Mac. In OpenHDD Local leggi l'identificativo della **partizione NTFS esterna**, per esempio `disk4s1`. Controlla anche la capacità. Non usare l'identificativo di un disco interno o quello del disco intero.
-3. Il file di prova già preparato è `Build/openhdd-probe-8MiB.bin`; SHA-256: `69f4a57d6d6c0d87ebec0c9b1a275d3f7feb641d0083326137f617654ae52eef`.
-4. Prima della copia, verifica quel valore con `shasum -a 256 /Users/nico/wa/open-hdd/Build/openhdd-probe-8MiB.bin`. Se differisce, interrompi.
-
-## Copia
-
-Sostituisci **solo** `disk4s1` con l'identificativo mostrato dall'app. Scegli un nome finale nuovo se ripeti la prova.
-
-```sh
-sudo /Users/nico/wa/open-hdd/Build/OpenHDDCopy --disk disk4s1 /Users/nico/wa/open-hdd/Build/openhdd-probe-8MiB.bin OpenHDD-test-20260925.bin
-```
-
-Il programma mostra identificativo, capacità, modello del dispositivo e nome del volume e richiede di digitare `COPY disk4s1`. Controlla tutti questi dati prima di confermare. Rilegge identità e formato, smonta normalmente tutti i volumi del dispositivo, reclama il disco in modo esclusivo e tenta apertura esclusiva della partizione. Se uno di questi controlli fallisce, non scrive. Verifica struttura, dirty bit, ibernazione, journal e rischio di riscrittura automatica del metadato `$TXF_DATA` in sola lettura. Non esegue recovery o riparazioni. Copia soltanto un file nuovo nella radice NTFS; il nome finale accetta solo lettere ASCII, cifre, punto, trattino e underscore. La sorgente deve appartenere all'utente che ha invocato `sudo`.
-
-Durante la copia crea un file temporaneo con prefisso `.OpenHDD-pending-`. Dopo chiusura, flush e confronto SHA-256, pubblica il nome finale come hard link e lo verifica. La versione corrente rimuove il **solo nome temporaneo** dopo la verifica, sincronizza e verifica di nuovo il nome finale. Un temporaneo rimasto sul volume, anche con due hard link, blocca ogni nuova scrittura: può indicare un'interruzione dopo la pubblicazione. Non cancellarlo automaticamente né ripetere la copia. Un'uscita diversa da `PASS` non significa che il disco sia intatto: lascia l'unità collegata se l'espulsione è fallita e controllala su Windows.
-
-Il programma tenta espulsione normale al termine. Riporta `PASS` solo dopo verifica dei byte, rimozione del nome temporaneo, seconda verifica, chiusura del dispositivo ed espulsione. Se il sistema non concede il blocco esclusivo o il flush della cache del dispositivo, rifiuta o segnala errore: non aggirare il controllo.
-
-## Verifica dopo la prova
-
-1. Ricollega l'unità al Mac in sola lettura. Calcola `shasum -a 256 /Volumes/NOME_VOLUME/OpenHDD-test-20260925.bin` e confronta con il valore della sorgente. Espelli normalmente.
-2. Su Windows esegui di nuovo `chkdsk X:` **senza `/f`**; conserva il risultato. Controlla che il file finale sia leggibile e abbia dimensione 8 MiB. [Microsoft](https://learn.microsoft.com/windows-server/administration/windows-commands/chkdsk) indica che senza parametri il comando non corregge gli errori, ma può segnare il volume come pulito se non trova corruzione: non considerarlo una prova di zero scritture.
-3. Se emergono errori, interrompi il collaudo. Non usare la scrittura OpenHDD su dischi importanti. Riporta il messaggio del programma e l'esito di `chkdsk`, senza condividere contenuti privati.
-
-Questa prima prova non valida resistenza a scollegamento durante scrittura o perdita di alimentazione. L'app rimane in sola lettura fino al completamento della matrice di sicurezza in [percorso-senza-abbonamento.md](percorso-senza-abbonamento.md).
+Nelle prove passate il motore creava un nome temporaneo `.OpenHDD-pending-`, copiava e verificava SHA-256, poi aggiungeva il nome finale come hard link e rimuoveva il temporaneo. Il successo delle copie normali non ha garantito coerenza dopo lo scollegamento; la procedura è conservata solo come evidenza storica.
 
 ## Prima prova fisica — 25 settembre 2026
 
@@ -139,4 +112,4 @@ Questa prima prova non valida resistenza a scollegamento durante scrittura o per
 - Prima della prova, il Mac ha riletto in sola lettura i cinque file precedenti con dimensioni e SHA-256 attesi, senza temporanei. `OpenHDDCopy --check-disk disk4s1` ha riferito preflight NTFS riuscito, 3.719.008.256 byte liberi, zero scritture tentate e ripristino del mount in sola lettura.
 - La build di prova mostra avanzamento ogni 64 MiB durante la sola fase di copia dei dati. La sorgente locale sparsa misura 2.147.483.648 byte; il nome nuovo previsto era `OpenHDD-v2-interrupted.bin`. L'utente ha scollegato fisicamente la sola USB sacrificabile dopo l'avvio del trasferimento. Le righe di avanzamento sono arrivate fino a 2048 MiB, ma indicano byte elaborati dall'applicazione, **non** byte persistiti sull'unità.
 - Il programma ha concluso con `Copy failed at stage 2; code 5`, `Device identity changed; automatic eject skipped.` e `NO SUCCESS: drive may need Windows chkdsk.` Nessun falso `PASS`. Dopo l'esito il Mac non vedeva più dischi esterni.
-- Su Windows, il volume è riconosciuto come NTFS e i cinque file precedenti sono visibili. L'utente ha trascritto l'output di `chkdsk X:` in sola lettura: fasi 1–3 concluse, poi **«Mappa di bit del volume non corretta. Verifica del file system effettuata. Sono stati rilevati problemi.»** Windows suggerisce `chkdsk /scan`. Il controllo riporta zero settori danneggiati, ma questo non elimina l'incoerenza della bitmap. PowerShell legge i cinque file preesistenti e restituisce gli SHA-256 attesi: vuoto `e3b0c442…b855`, 1 byte `2d711642…4881`, Unicode `85df5f6f…f2cd`, 8 MiB `69f4a57d…2eef`, 128 MiB `66b2c414…566f`. Nessuna riparazione è stata avviata. Dopo il ritorno al Mac, lo stesso volume è montato in sola lettura; i cinque file sono visibili, nessun nome temporaneo è visibile, ma `diskutil` indica circa 2,0 GB occupati contro 144.448 KB in 12 file riportati da `chkdsk`. Questo scarto conferma che la presenza e gli hash dei file non bastano a validare la bitmap; la causa esatta richiede analisi ulteriore. `OpenHDDCopy --check-disk disk4s1` ha riportato `Read-only check found an unresolved local OpenHDD transfer.` e `NTFS restored as read-only.`: il marcatore locale blocca quindi ulteriori copie sulla stessa USB da questo Mac. Espulsione normale finale riuscita. Il test **fallisce il criterio di rilascio**: la scrittura NTFS diretta resta sperimentale e «Copia sul disco» non viene abilitato nell'app. Nessuna nuova scrittura OpenHDD su questo volume.
+- Su Windows, il volume è riconosciuto come NTFS e i cinque file precedenti sono visibili. L'utente ha trascritto l'output di `chkdsk X:` in sola lettura: fasi 1–3 concluse, poi **«Mappa di bit del volume non corretta. Verifica del file system effettuata. Sono stati rilevati problemi.»** Windows suggerisce `chkdsk /scan`. Il controllo riporta zero settori danneggiati, ma questo non elimina l'incoerenza della bitmap. PowerShell legge i cinque file preesistenti e restituisce gli SHA-256 attesi: vuoto `e3b0c442…b855`, 1 byte `2d711642…4881`, Unicode `85df5f6f…f2cd`, 8 MiB `69f4a57d…2eef`, 128 MiB `66b2c414…566f`. Nessuna riparazione è stata avviata. L'analisi successiva dell'immagine ha trovato `$Bitmap` con 436.720 cluster più occupati di quelli attribuiti agli extent MFT; `$LogFile` era pulito e senza operazioni da riprodurre. La causa probabile e i limiti della prova sono descritti nel [rapporto forense](analisi-guasto-bitmap-ntfs-2026-09-27.md). `OpenHDDCopy --check-disk disk4s1` ha riportato `Read-only check found an unresolved local OpenHDD transfer.` e `NTFS restored as read-only.`: il marcatore locale blocca quindi ulteriori copie sulla stessa USB da questo Mac. Espulsione normale finale riuscita. Il test **fallisce il criterio di rilascio**: la scrittura NTFS diretta resta sperimentale e «Copia sul disco» non viene abilitato nell'app. Nessuna nuova scrittura OpenHDD su questo volume.
