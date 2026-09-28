@@ -27,7 +27,7 @@ cc -std=c11 -O2 -arch arm64 -mmacosx-version-min=15.4 -Wall -Wextra -Werror \
   "$root/Sources/NTFSWrite/WriteEngine.c" \
   "$root/Tests/quarantine_probe.c" \
   "$root/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a" \
-  -framework CoreFoundation -framework DiskArbitration -framework IOKit \
+  -framework CoreFoundation -framework DiskArbitration -framework IOKit -framework Security \
   -o "$fixture/quarantine-probe"
 "$fixture/quarantine-probe" "$image" "$fixture/quarantine"
 dd if=/dev/urandom of="$source_file" bs=1m count=8 status=none
@@ -85,7 +85,7 @@ OPENHDD_TEST_SHORT_PREAD_AT=1 OPENHDD_TEST_SHORT_PWRITE_AT=1 \
 cmp "$fixture/boundary-65537.bin" "$fixture/short-io-readback.bin"
 partial_io="$fixture/partial-io.img"
 cp "$image" "$partial_io"
-if OPENHDD_TEST_SHORT_PWRITE_AT=100 OPENHDD_TEST_FAIL_PWRITE_AT=101 \
+if OPENHDD_TEST_SHORT_PWRITE_AT=8 OPENHDD_TEST_FAIL_PWRITE_AT=9 \
   "$root/Build/OpenHDDCopyTest" --image "$partial_io" \
   "$source_file" short-then-error.bin > "$fixture/partial-io.log" 2>&1; then
   echo 'FAIL: short write followed by EIO reported success' >&2
@@ -261,7 +261,7 @@ for boundary in 2 3 4 5 0; do
 done
 
 # Low-level I/O failures at preflight, data write, sync, and final read.
-for fault in pread-1 pwrite-100 nospace-100 sync-1 sync-8 sync-14 pread-700; do
+for fault in pread-1 pwrite-8 nospace-8 sync-1 sync-8 sync-14 pread-200 pread-300; do
   kind=${fault%-*}
   number=${fault#*-}
   failed="$fixture/fault-$fault.img"
@@ -290,7 +290,8 @@ for fault in pread-1 pwrite-100 nospace-100 sync-1 sync-8 sync-14 pread-700; do
 done
 grep -q 'stage 4' "$fixture/fault-sync-8.log"
 grep -q 'stage 6' "$fixture/fault-sync-14.log"
-grep -q 'stage 5' "$fixture/fault-pread-700.log"
+grep -q 'stage 3' "$fixture/fault-pread-200.log"
+grep -q 'stage 5' "$fixture/fault-pread-300.log"
 
 # A source larger than the disposable image must never replace older files.
 full="$fixture/full.img"
@@ -444,8 +445,9 @@ fi
 after=$(shasum -a 256 "$folders" | awk '{print $1}')
 test "$before" = "$after"
 
-# A failure in the second file of a batch keeps the first file and the old
-# ones, and leaves the volume marked for checking.
+# A failure while writing the second file of a batch publishes nothing:
+# every file is written and verified before any final name appears. Old
+# files stay intact and the volume stays marked for checking.
 batch_fail="$fixture/batch-fail.img"
 cp "$image" "$batch_fail"
 if OPENHDD_TEST_FAIL_AFTER_FIRST_CHUNK=1 "$root/Build/OpenHDDCopyTest" \
@@ -456,8 +458,10 @@ if OPENHDD_TEST_FAIL_AFTER_FIRST_CHUNK=1 "$root/Build/OpenHDDCopyTest" \
 fi
 grep -q 'item 2 of 2' "$fixture/batch-fail.log"
 grep -q 'chkdsk X: /f' "$fixture/batch-fail.log"
-"$build/ntfsprogs/ntfscat" -f "$batch_fail" /first.bin > "$fixture/batch-first.bin"
-cmp "$fixture/one.bin" "$fixture/batch-first.bin"
+if "$build/ntfsprogs/ntfscat" -f "$batch_fail" /first.bin > /dev/null 2>&1; then
+  echo 'FAIL: first file published although the batch failed' >&2
+  exit 1
+fi
 "$build/ntfsprogs/ntfscat" -f "$batch_fail" /verified.bin > "$fixture/batch-old.bin"
 cmp "$source_file" "$fixture/batch-old.bin"
 check_state "$batch_fail" | grep -q '^dirty=1 '
@@ -465,6 +469,50 @@ if "$build/ntfsprogs/ntfscat" -f "$batch_fail" /second.bin > /dev/null 2>&1; the
   echo 'FAIL: incomplete second file published' >&2
   exit 1
 fi
+
+# Raw devices accept only whole sectors: emulate 4 KiB sectors, where NTFS
+# metadata (1 KiB MFT records) needs the read-modify-write layer.
+for sector in 512 4096; do
+  aligned="$fixture/aligned-$sector.img"
+  cp "$image" "$aligned"
+  OPENHDD_TEST_ALIGN=$sector "$root/Build/OpenHDDCopyTest" --image "$aligned" \
+    "$source_file" "aligned-$sector.bin" "$fixture/one.bin" "tiny-$sector.bin" \
+    > "$fixture/aligned-$sector.log" 2>&1
+  "$build/ntfsprogs/ntfscat" "$aligned" "/aligned-$sector.bin" > "$fixture/aligned-read.bin"
+  cmp "$source_file" "$fixture/aligned-read.bin"
+  "$build/ntfsprogs/ntfscat" "$aligned" "/tiny-$sector.bin" > "$fixture/aligned-read.bin"
+  cmp "$fixture/one.bin" "$fixture/aligned-read.bin"
+  "$build/ntfsprogs/ntfscat" "$aligned" /verified.bin > "$fixture/aligned-old.bin"
+  cmp "$source_file" "$fixture/aligned-old.bin"
+  check_state "$aligned" | grep -q '^dirty=0 .* pending=0 code=0'
+done
+
+# A real change of a source during the copy is refused (nothing published);
+# a metadata-only change (xattr, as macOS adds for picked files) is not.
+changed="$fixture/changed.img"
+cp "$image" "$changed"
+cp "$source_file" "$fixture/mutating.bin"
+( sleep 0.2; printf 'X' | dd of="$fixture/mutating.bin" bs=1 seek=10 conv=notrunc status=none ) &
+if OPENHDD_TEST_ALIGN=512 OPENHDD_TEST_SLOW_WRITE_MS=20 "$root/Build/OpenHDDCopyTest" --image "$changed" \
+  "$fixture/mutating.bin" mutating.bin > "$fixture/changed.log" 2>&1; then
+  echo 'FAIL: source modified during copy reported success' >&2
+  exit 1
+fi
+wait
+grep -q 'changed while it was being copied' "$fixture/changed.log"
+if "$build/ntfsprogs/ntfscat" -f "$changed" /mutating.bin > /dev/null 2>&1; then
+  echo 'FAIL: modified source was published' >&2
+  exit 1
+fi
+tagged="$fixture/tagged.img"
+cp "$image" "$tagged"
+cp "$source_file" "$fixture/tagged.bin"
+( sleep 0.2; xattr -w com.openhdd.test 1 "$fixture/tagged.bin" ) &
+OPENHDD_TEST_SLOW_WRITE_MS=20 "$root/Build/OpenHDDCopyTest" --image "$tagged" \
+  "$fixture/tagged.bin" tagged.bin > "$fixture/tagged.log" 2>&1
+wait
+"$build/ntfsprogs/ntfscat" "$tagged" /tagged.bin > "$fixture/tagged-read.bin"
+cmp "$source_file" "$fixture/tagged-read.bin"
 
 # After Windows has checked an interrupted volume (emulated by clearing only
 # the dirty flag), OpenHDD removes its own temporaries and copies again.

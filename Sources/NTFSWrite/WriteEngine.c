@@ -25,9 +25,30 @@
 #include <ntfs-3g/unistr.h>
 #include <ntfs-3g/volume.h>
 
-enum { COPY_CHUNK = 65536, MAX_ITEMS = 4096, PENDING_LENGTH = 49 };
+/* Large sequential I/O is what keeps USB and SSD transfers fast; the
+   kernel splits it at the device's maximum transfer size. */
+enum { IO_CHUNK = 4 * 1024 * 1024, MAX_ITEMS = 4096, PENDING_LENGTH = 49,
+       UNIT_OVERHEAD = 1024 * 1024 };
 
 static const char pending_prefix[] = ".OpenHDD-pending-";
+
+/* Last low-level failure, for the diagnostic line of the caller. */
+static char last_error[256];
+
+static void note_error(const char *format, ...)
+{
+    int saved = errno;
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(last_error, sizeof(last_error), format, arguments);
+    va_end(arguments);
+    errno = saved;
+}
+
+const char *oh_last_error(void)
+{
+    return last_error;
+}
 
 typedef struct {
     int fd;
@@ -35,6 +56,8 @@ typedef struct {
     uint64_t position;
     int is_device;
     int io_failed;
+    /* Raw devices accept only whole sectors; 1 for image files. */
+    uint32_t align;
     /* Set once this session has written VOLUME_IS_DIRTY itself. Only then
        may the engine mount or verify a dirty volume. */
     int own_dirty;
@@ -180,6 +203,7 @@ static int cache_flush(int fd)
 
 static int durable_sync(Target *target)
 {
+    errno = 0;
     #ifdef OPENHDD_TESTING
     if (fail_at("OPENHDD_TEST_FAIL_SYNC_AT", ++target->sync_calls)) {
         target->io_failed = 1;
@@ -191,17 +215,27 @@ static int durable_sync(Target *target)
         return -1;
     }
     #endif
-    if (fsync(target->fd)) { target->io_failed = 1; return -1; }
+    if (fsync(target->fd)) {
+        note_error("device flush (fsync): %s", strerror(errno));
+        target->io_failed = 1;
+        return -1;
+    }
     if (target->is_device && ioctl(target->fd, DKIOCSYNCHRONIZECACHE)) {
+        note_error("drive cache flush: %s", strerror(errno));
         target->io_failed = 1;
         return -1;
     }
     return 0;
 }
 
-static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
-                      int writing)
+static s64 raw_io(Target *target, void *data, s64 count, s64 offset,
+                  int writing)
 {
+    if (target->align > 1 && (offset % target->align || count % target->align)) {
+        errno = EINVAL; /* what a raw device returns */
+        target->io_failed = 1;
+        return -1;
+    }
     if (count < 0 || offset < 0 || count > SSIZE_MAX ||
         (uint64_t)offset > target->size ||
         (uint64_t)count > target->size - (uint64_t)offset) {
@@ -220,6 +254,8 @@ static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
         }
         if (writing) {
             ++target->write_calls;
+            uint64_t slow = env_number("OPENHDD_TEST_SLOW_WRITE_MS");
+            if (slow) usleep((useconds_t)(slow * 1000));
             int injected_error =
                 fail_at("OPENHDD_TEST_FAIL_PWRITE_AT", target->write_calls) ? EIO :
                 fail_at("OPENHDD_TEST_ENOSPC_PWRITE_AT", target->write_calls) ? ENOSPC : 0;
@@ -270,12 +306,86 @@ static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) {
             if (n == 0) errno = EIO;
+            note_error("device %s of %zu bytes at offset %llu: %s",
+                       writing ? "write" : "read", request,
+                       (unsigned long long)offset + done, strerror(errno));
             target->io_failed = 1;
             return -1;
         }
         done += (size_t)n;
     }
     return count;
+}
+
+/* NTFS-3G issues small metadata requests (boot sector, 1 KiB MFT records)
+   that a raw device rejects. They are widened to whole sectors with a
+   read-modify-write; aligned bulk data passes straight through. Buffers are
+   bounced to page-aligned memory, which every raw driver accepts. */
+static s64 bounded_io(Target *target, void *data, s64 count, s64 offset,
+                      int writing)
+{
+    uint64_t align = target->align > 1 ? target->align : 1;
+    if (count < 0 || offset < 0 || (uint64_t)offset > target->size ||
+        (uint64_t)count > target->size - (uint64_t)offset) {
+        target->io_failed = 1;
+        errno = EINVAL;
+        return -1;
+    }
+    int aligned = align == 1 ||
+        ((uint64_t)offset % align == 0 && (uint64_t)count % align == 0);
+    if (align == 1 || (aligned && ((uintptr_t)data & 4095) == 0))
+        return raw_io(target, data, count, offset, writing);
+    uint64_t start = (uint64_t)offset / align * align;
+    uint64_t end = ((uint64_t)offset + (uint64_t)count + align - 1) / align * align;
+    if (end > target->size) { target->io_failed = 1; errno = EINVAL; return -1; }
+    uint64_t done = 0;
+    void *bounce = NULL;
+    size_t capacity = IO_CHUNK;
+    if (posix_memalign(&bounce, 4096, capacity)) { errno = ENOMEM; return -1; }
+    /* Walk the widened range in chunks; only the edges need a read first. */
+    for (uint64_t block = start; block < end; ) {
+        uint64_t span = end - block < capacity ? end - block : capacity;
+        uint64_t lo = block > (uint64_t)offset ? block : (uint64_t)offset;
+        uint64_t hi = block + span < (uint64_t)offset + (uint64_t)count ?
+            block + span : (uint64_t)offset + (uint64_t)count;
+        int partial = lo != block || hi != block + span;
+        if ((!writing || partial) &&
+            raw_io(target, bounce, (s64)span, (s64)block, 0) != (s64)span) {
+            free(bounce);
+            return -1;
+        }
+        if (writing) {
+            memcpy((char *)bounce + (lo - block), (const char *)data + (lo - (uint64_t)offset),
+                   (size_t)(hi - lo));
+            if (raw_io(target, bounce, (s64)span, (s64)block, 1) != (s64)span) {
+                free(bounce);
+                return -1;
+            }
+        } else {
+            memcpy((char *)data + (lo - (uint64_t)offset), (char *)bounce + (lo - block),
+                   (size_t)(hi - lo));
+        }
+        done += hi - lo;
+        block += span;
+    }
+    free(bounce);
+    return (s64)done;
+}
+
+static uint32_t device_alignment(int fd)
+{
+    struct stat state;
+    uint32_t block = 0;
+    #ifdef OPENHDD_TESTING
+    /* Emulates a raw device with this sector size on an image file. */
+    uint64_t forced = env_number("OPENHDD_TEST_ALIGN");
+    if (forced >= 512 && forced <= 65536 && !(forced & (forced - 1)))
+        return (uint32_t)forced;
+    #endif
+    if (fstat(fd, &state) || !S_ISCHR(state.st_mode)) return 1;
+    if (ioctl(fd, DKIOCGETBLOCKSIZE, &block) || block < 512 || block > 65536 ||
+        (block & (block - 1))) return 0;
+    return block;
 }
 
 static Target *target_of(struct ntfs_device *device)
@@ -445,9 +555,11 @@ int oh_ntfs_safety_preflight(int target_fd, uint64_t target_size,
 {
     if (target_fd < 0 || target_size < 4096 || target_size > INT64_MAX ||
         !free_bytes || !warnings) return EINVAL;
-    Target target = { .fd = target_fd, .size = target_size };
+    Target target = { .fd = target_fd, .size = target_size,
+                      .align = device_alignment(target_fd) };
     *free_bytes = 0;
     *warnings = 0;
+    if (!target.align) return EIO;
     ntfs_log_set_handler(ntfs_log_handler_null);
     return volume_scan(&target, free_bytes, warnings);
 }
@@ -475,49 +587,6 @@ static int name_is_free(Target *target, uint64_t directory, const char *name)
     oh_ntfs_close(volume);
     if (target->io_failed) return EIO;
     return status ? status : exists ? EEXIST : 0;
-}
-
-static int verify_file(Target *target, uint64_t directory, const char *name,
-                       uint64_t size,
-                       const unsigned char digest[CC_SHA256_DIGEST_LENGTH],
-                       uint64_t *inode)
-{
-    OHNTFSVolume *volume = NULL;
-    OHNTFSItem item;
-    uint32_t warnings = 0;
-    unsigned char buffer[COPY_CHUNK], actual[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256_CTX context;
-    int status = readonly_open(target, &volume, &warnings);
-    if (status) return status;
-    if (warnings || oh_ntfs_lookup(volume, directory, name, &item) ||
-        item.kind != 1 || item.size != size || !CC_SHA256_Init(&context)) {
-        status = EIO;
-        goto out;
-    }
-    for (uint64_t offset = 0; offset < size; ) {
-        uint64_t amount = size - offset;
-        if (amount > sizeof(buffer)) amount = sizeof(buffer);
-        if (oh_ntfs_read(volume, item.inode, offset, buffer, amount) !=
-            (int64_t)amount ||
-            !CC_SHA256_Update(&context, buffer, (CC_LONG)amount)) {
-            status = EIO;
-            goto out;
-        }
-        offset += amount;
-    }
-    if (!size) {
-        unsigned char probe;
-        if (oh_ntfs_read(volume, item.inode, 0, &probe, 1) != 0) {
-            status = EIO;
-            goto out;
-        }
-    }
-    if (!CC_SHA256_Final(actual, &context) ||
-        memcmp(actual, digest, sizeof(actual))) status = EIO;
-    else { *inode = item.inode; status = 0; }
-out:
-    oh_ntfs_close(volume);
-    return status;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -718,188 +787,41 @@ static int set_volume_dirty(Target *target, int dirty)
     return 0;
 }
 
-static int create_pending(Target *target, int source_fd,
-                          const struct stat *source, const char *pending,
-                          size_t index, OHCopyProgress progress, void *context,
-                          unsigned char digest[CC_SHA256_DIGEST_LENGTH])
+/* ------------------------------------------------------------------------ */
+/* Batch phases: write all -> sync -> verify once -> publish -> complete     */
+/* ------------------------------------------------------------------------ */
+
+typedef struct {
+    OHCopyProgress callback;
+    void *context;
+    size_t count;
+    uint64_t done;
+    uint64_t total;
+} Work;
+
+static void work_report(Work *work, int phase, size_t index)
 {
-    ntfs_volume *volume = mount_rw(target);
-    ntfs_inode *root = NULL, *created = NULL;
-    ntfs_attr *data = NULL;
-    ntfschar *wide = NULL;
-    unsigned char buffer[COPY_CHUNK];
-    CC_SHA256_CTX sha;
-    int result = -1;
-    if (!volume) return -1;
-    root = ntfs_inode_open(volume, FILE_root);
-    if (!root) goto out;
-    int count = ntfs_mbstoucs(pending, &wide);
-    if (count <= 0 || count > 255) goto out;
-    created = ntfs_create(root, const_cpu_to_le32(0), wide,
-                          (u8)count, S_IFREG);
-    if (!created) goto out;
-    if (ntfs_inode_close(root)) { root = NULL; goto out; }
-    root = NULL;
-    data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
-    if (!data) {
-        if (errno != ENOENT ||
-            ntfs_attr_add(created, AT_DATA, AT_UNNAMED, 0, NULL, 0))
-            goto out;
-        data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
-        if (!data) goto out;
-    }
-    if (ntfs_attr_truncate_solid(data, source->st_size) ||
-        !CC_SHA256_Init(&sha)) goto out;
-    if (lseek(source_fd, 0, SEEK_SET) != 0) goto out;
-    for (uint64_t offset = 0; offset < (uint64_t)source->st_size; ) {
-        #ifdef OPENHDD_TESTING
-        if (offset && getenv("OPENHDD_TEST_FAIL_AFTER_FIRST_CHUNK")) {
-            errno = EIO;
-            goto out;
-        }
-        #endif
-        size_t amount = (uint64_t)source->st_size - offset;
-        if (amount > sizeof(buffer)) amount = sizeof(buffer);
-        ssize_t got = read(source_fd, buffer, amount);
-        if (got != (ssize_t)amount ||
-            !CC_SHA256_Update(&sha, buffer, (CC_LONG)amount))
-            goto out;
-        for (ssize_t done = 0; done < got; ) {
-            s64 written = ntfs_attr_pwrite(data, (s64)(offset + done),
-                                            got - done, buffer + done);
-            if (written <= 0) goto out;
-            done += written;
-        }
-        offset += amount;
-        if (progress) progress(context, index, offset, (uint64_t)source->st_size);
-        #ifdef OPENHDD_TESTING
-        if (getenv("OPENHDD_TEST_ABORT_AFTER_FIRST_CHUNK"))
-            _exit(86); /* Emulate a crash before close or sync. */
-        #endif
-    }
-    struct stat after;
-    if (fstat(source_fd, &after) || after.st_dev != source->st_dev ||
-        after.st_ino != source->st_ino || after.st_size != source->st_size ||
-        after.st_mtimespec.tv_sec != source->st_mtimespec.tv_sec ||
-        after.st_mtimespec.tv_nsec != source->st_mtimespec.tv_nsec ||
-        after.st_ctimespec.tv_sec != source->st_ctimespec.tv_sec ||
-        after.st_ctimespec.tv_nsec != source->st_ctimespec.tv_nsec ||
-        !CC_SHA256_Final(digest, &sha)) goto out;
-    ntfs_attr_close(data);
-    data = NULL;
-    if (ntfs_inode_close(created)) { created = NULL; goto out; }
-    created = NULL;
-    result = 0;
-out:
-    free(wide);
-    if (data) ntfs_attr_close(data);
-    if (created && ntfs_inode_close(created)) result = -1;
-    if (root && ntfs_inode_close(root)) result = -1;
-    if (ntfs_umount(volume, FALSE)) result = -1;
-    if (durable_sync(target)) result = -1;
-    return result;
+    if (work->callback)
+        work->callback(work->context, phase, index, work->count,
+                       work->done, work->total);
 }
 
-static ntfs_inode *open_directory(ntfs_volume *volume, const char *path)
+static void work_advance(Work *work, int phase, size_t index, uint64_t units)
 {
-    if (!path || !*path) return ntfs_inode_open(volume, FILE_root);
-    ntfs_inode *directory = ntfs_pathname_to_inode(volume, NULL, path);
-    if (directory && !(directory->mrec->flags & MFT_RECORD_IS_DIRECTORY)) {
-        ntfs_inode_close(directory);
-        errno = ENOTDIR;
-        return NULL;
-    }
-    return directory;
+    work->done = work->total - work->done < units ? work->total : work->done + units;
+    work_report(work, phase, index);
 }
 
-static int publish(Target *target, const char *pending,
-                   const char *directory_path, const char *final_name,
-                   uint64_t expected_inode)
-{
-    ntfs_volume *volume = mount_rw(target);
-    ntfs_inode *directory = NULL, *source = NULL;
-    ntfschar *wide = NULL;
-    int result = -1;
-    if (!volume) return -1;
-    directory = open_directory(volume, directory_path);
-    if (!directory) goto out;
-    source = ntfs_pathname_to_inode(volume, NULL, pending);
-    if (!source || source->mft_no != expected_inode) goto out;
-    ntfs_inode *existing = ntfs_pathname_to_inode(volume, directory, final_name);
-    if (existing) {
-        ntfs_inode_close(existing);
-        errno = EEXIST;
-        goto out;
-    }
-    if (errno != ENOENT) goto out;
-    int count = ntfs_mbstoucs(final_name, &wide);
-    if (count <= 0 || count > 255 ||
-        ntfs_link(source, directory, wide, (u8)count))
-        goto out;
-    #ifdef OPENHDD_TESTING
-    if (getenv("OPENHDD_TEST_FAIL_AFTER_LINK")) {
-        errno = EIO;
-        goto out;
-    }
-    #endif
-    result = 0;
-out:
-    free(wide);
-    if (source && ntfs_inode_close(source)) result = -1;
-    if (directory && ntfs_inode_close(directory)) result = -1;
-    if (ntfs_umount(volume, FALSE)) result = -1;
-    if (durable_sync(target)) result = -1;
-    return result;
-}
-
-/* Remove only the temporary name after the final name has been verified.
-   Any failure before this point leaves a pending entry that blocks new writes. */
-static int complete_pending(Target *target, const char *pending,
-                            const char *directory_path, const char *final_name,
-                            uint64_t expected_inode)
-{
-    ntfs_volume *volume = mount_rw(target);
-    ntfs_inode *root = NULL, *directory = NULL, *temporary = NULL, *final = NULL;
-    ntfschar *wide = NULL;
-    int result = -1;
-    if (!volume) return -1;
-    root = ntfs_inode_open(volume, FILE_root);
-    directory = open_directory(volume, directory_path);
-    if (!root || !directory) goto out;
-    temporary = ntfs_pathname_to_inode(volume, NULL, pending);
-    final = ntfs_pathname_to_inode(volume, directory, final_name);
-    if (!temporary || !final || temporary->mft_no != expected_inode ||
-        final->mft_no != expected_inode ||
-        le16_to_cpu(temporary->mrec->link_count) != 2) {
-        errno = EIO;
-        goto out;
-    }
-    if (ntfs_inode_close(final)) { final = NULL; goto out; }
-    final = NULL;
-    if (ntfs_inode_close(directory)) { directory = NULL; goto out; }
-    directory = NULL;
-    int count = ntfs_mbstoucs(pending, &wide);
-    if (count <= 0 || count > 255) goto out;
-    ntfs_inode *entry = temporary;
-    ntfs_inode *parent = root;
-    temporary = NULL;
-    root = NULL;
-    if (ntfs_delete(volume, pending, entry, parent, wide, (u8)count))
-        goto out;
-    result = 0;
-out:
-    free(wide);
-    if (final && ntfs_inode_close(final)) result = -1;
-    if (temporary && ntfs_inode_close(temporary)) result = -1;
-    if (directory && ntfs_inode_close(directory)) result = -1;
-    if (root && ntfs_inode_close(root)) result = -1;
-    if (ntfs_umount(volume, FALSE)) result = -1;
-    if (durable_sync(target)) result = -1;
-    return result;
-}
+typedef struct {
+    char pending[PENDING_LENGTH + 1];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    uint64_t size;
+    uint64_t inode;
+} Staged;
 
 static int phase_error(Target *target)
 {
+    if (errno == ESTALE) return ESTALE; /* a source changed, not the drive */
     return target->io_failed ? EIO : (errno ? errno : EIO);
 }
 
@@ -914,6 +836,273 @@ static void make_pending_name(char pending[PENDING_LENGTH + 1])
         pending[18 + i * 2] = hex[random_bytes[i] & 15];
     }
     pending[PENDING_LENGTH] = 0;
+}
+
+static ntfs_inode *open_directory(ntfs_volume *volume, const char *path)
+{
+    if (!path || !*path) return ntfs_inode_open(volume, FILE_root);
+    ntfs_inode *directory = ntfs_pathname_to_inode(volume, NULL, path);
+    if (directory && !(directory->mrec->flags & MFT_RECORD_IS_DIRECTORY)) {
+        ntfs_inode_close(directory);
+        errno = ENOTDIR;
+        return NULL;
+    }
+    return directory;
+}
+
+/* Content changes move the modification time. The status-change time is
+   deliberately ignored: macOS updates it when it merely tags a file the
+   user picked (com.apple.macl), which says nothing about its bytes. */
+static int source_unchanged(int fd, const struct stat *before)
+{
+    struct stat after;
+    return !fstat(fd, &after) && after.st_dev == before->st_dev &&
+        after.st_ino == before->st_ino && after.st_size == before->st_size &&
+        after.st_mtimespec.tv_sec == before->st_mtimespec.tv_sec &&
+        after.st_mtimespec.tv_nsec == before->st_mtimespec.tv_nsec;
+}
+
+/* Stage 2: every file is written under its temporary name in the root, in
+   one read-write mount, then the device is synced once. */
+static int write_all(Target *target, const OHCopyItem *items,
+                     const struct stat *sources, Staged *staged, size_t count,
+                     unsigned char *buffer, Work *work, size_t *failed_index)
+{
+    ntfs_volume *volume = mount_rw(target);
+    if (!volume) return -1;
+    ntfs_inode *root = ntfs_inode_open(volume, FILE_root);
+    int result = root ? 0 : -1;
+    for (size_t i = 0; i < count && !result; ++i) {
+        *failed_index = i;
+        ntfs_inode *created = NULL;
+        ntfs_attr *data = NULL;
+        ntfschar *wide = NULL;
+        CC_SHA256_CTX sha;
+        result = -1;
+        int length = ntfs_mbstoucs(staged[i].pending, &wide);
+        if (length <= 0 || length > 255) goto next;
+        created = ntfs_create(root, const_cpu_to_le32(0), wide, (u8)length, S_IFREG);
+        if (!created) goto next;
+        data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
+        if (!data) {
+            if (errno != ENOENT ||
+                ntfs_attr_add(created, AT_DATA, AT_UNNAMED, 0, NULL, 0)) goto next;
+            data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
+            if (!data) goto next;
+        }
+        if (ntfs_attr_truncate_solid(data, sources[i].st_size) ||
+            !CC_SHA256_Init(&sha) ||
+            lseek(items[i].source_fd, 0, SEEK_SET) != 0) goto next;
+        for (uint64_t offset = 0; offset < (uint64_t)sources[i].st_size; ) {
+            #ifdef OPENHDD_TESTING
+            if (offset && getenv("OPENHDD_TEST_FAIL_AFTER_FIRST_CHUNK")) {
+                errno = EIO;
+                goto next;
+            }
+            #endif
+            size_t amount = (uint64_t)sources[i].st_size - offset;
+            if (amount > IO_CHUNK) amount = IO_CHUNK;
+            ssize_t got = 0;
+            while (got < (ssize_t)amount) {
+                ssize_t n = read(items[i].source_fd, buffer + got, amount - (size_t)got);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                got += n;
+            }
+            if (got != (ssize_t)amount) {
+                note_error("read of source file %zu at offset %llu failed", i + 1,
+                           (unsigned long long)offset);
+                errno = got < 0 ? errno : ESTALE;
+                goto next;
+            }
+            if (!CC_SHA256_Update(&sha, buffer, (CC_LONG)amount)) goto next;
+            for (ssize_t done = 0; done < got; ) {
+                s64 written = ntfs_attr_pwrite(data, (s64)(offset + done),
+                                                got - done, buffer + done);
+                if (written <= 0) goto next;
+                done += written;
+            }
+            offset += amount;
+            work_advance(work, OH_PHASE_WRITE, i, amount);
+            #ifdef OPENHDD_TESTING
+            if (getenv("OPENHDD_TEST_ABORT_AFTER_FIRST_CHUNK"))
+                _exit(86); /* Emulate a crash before close or sync. */
+            #endif
+        }
+        if (!source_unchanged(items[i].source_fd, &sources[i])) {
+            note_error("source file %zu changed while it was being copied", i + 1);
+            errno = ESTALE;
+            goto next;
+        }
+        if (!CC_SHA256_Final(staged[i].digest, &sha)) goto next;
+        staged[i].size = (uint64_t)sources[i].st_size;
+        result = 0;
+    next:
+        free(wide);
+        if (data) ntfs_attr_close(data);
+        if (created && ntfs_inode_close(created)) result = -1;
+    }
+    int failure = result ? errno : 0;
+    if (root && ntfs_inode_close(root)) result = -1;
+    work_report(work, OH_PHASE_SYNC, count ? count - 1 : 0);
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    if (failure) errno = failure;
+    return result;
+}
+
+/* Stage 3: the only full read-back. On a raw device it comes from the
+   drive, not from a cache. Final names are re-checked in the same view. */
+static int verify_all(Target *target, const OHCopyItem *items,
+                      uint64_t directory_inode, Staged *staged, size_t count,
+                      unsigned char *buffer, Work *work, size_t *failed_index)
+{
+    OHNTFSVolume *volume = NULL;
+    uint32_t warnings = 0;
+    int status = readonly_open(target, &volume, &warnings);
+    if (status) return status;
+    if (warnings) status = EBUSY;
+    for (size_t i = 0; i < count && !status; ++i) {
+        *failed_index = i;
+        OHNTFSItem item;
+        CC_SHA256_CTX sha;
+        unsigned char actual[CC_SHA256_DIGEST_LENGTH];
+        int exists = 0;
+        if (oh_ntfs_name_exists_nocase(volume, directory_inode,
+                                       items[i].destination_name, &exists) ||
+            exists) { status = exists ? EEXIST : EIO; break; }
+        if (oh_ntfs_lookup(volume, FILE_root, staged[i].pending, &item) ||
+            item.kind != 1 || item.size != staged[i].size ||
+            !CC_SHA256_Init(&sha)) { status = EIO; break; }
+        for (uint64_t offset = 0; offset < staged[i].size; ) {
+            uint64_t amount = staged[i].size - offset;
+            if (amount > IO_CHUNK) amount = IO_CHUNK;
+            if (oh_ntfs_read(volume, item.inode, offset, buffer, amount) !=
+                (int64_t)amount ||
+                !CC_SHA256_Update(&sha, buffer, (CC_LONG)amount)) {
+                status = EIO;
+                break;
+            }
+            offset += amount;
+            work_advance(work, OH_PHASE_VERIFY, i, amount);
+        }
+        if (status) break;
+        if (!staged[i].size &&
+            oh_ntfs_read(volume, item.inode, 0, buffer, 1) != 0) { status = EIO; break; }
+        if (!CC_SHA256_Final(actual, &sha) ||
+            memcmp(actual, staged[i].digest, sizeof(actual))) { status = EIO; break; }
+        staged[i].inode = item.inode;
+    }
+    oh_ntfs_close(volume);
+    return target->io_failed ? EIO : status;
+}
+
+/* Stage 4: every verified file gets its final name, in one mount. */
+static int publish_all(Target *target, const char *directory_path,
+                       const OHCopyItem *items, const Staged *staged,
+                       size_t count, Work *work, size_t *failed_index)
+{
+    ntfs_volume *volume = mount_rw(target);
+    if (!volume) return -1;
+    ntfs_inode *directory = open_directory(volume, directory_path);
+    int result = directory ? 0 : -1;
+    for (size_t i = 0; i < count && !result; ++i) {
+        *failed_index = i;
+        ntfschar *wide = NULL;
+        result = -1;
+        ntfs_inode *source = ntfs_pathname_to_inode(volume, NULL, staged[i].pending);
+        if (!source || source->mft_no != staged[i].inode) goto next;
+        ntfs_inode *existing = ntfs_pathname_to_inode(volume, directory,
+                                                       items[i].destination_name);
+        if (existing) { ntfs_inode_close(existing); errno = EEXIST; goto next; }
+        if (errno != ENOENT) goto next;
+        int length = ntfs_mbstoucs(items[i].destination_name, &wide);
+        if (length <= 0 || length > 255 ||
+            ntfs_link(source, directory, wide, (u8)length)) goto next;
+        result = 0;
+        #ifdef OPENHDD_TESTING
+        if (getenv("OPENHDD_TEST_FAIL_AFTER_LINK")) { errno = EIO; result = -1; }
+        #endif
+    next:
+        free(wide);
+        if (source && ntfs_inode_close(source)) result = -1;
+        work_advance(work, OH_PHASE_PUBLISH, i, UNIT_OVERHEAD / 2);
+    }
+    if (directory && ntfs_inode_close(directory)) result = -1;
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    return result;
+}
+
+/* Checks names and identities without re-reading file contents: publish
+   and completion only add or remove directory entries. */
+static int check_names(Target *target, uint64_t directory_inode,
+                       const OHCopyItem *items, const Staged *staged,
+                       size_t count, int pending_expected,
+                       size_t *failed_index)
+{
+    OHNTFSVolume *volume = NULL;
+    uint32_t warnings = 0;
+    int status = readonly_open(target, &volume, &warnings);
+    if (status) return status;
+    if (warnings) status = EBUSY;
+    for (size_t i = 0; i < count && !status; ++i) {
+        *failed_index = i;
+        OHNTFSItem final_item, pending_item;
+        int pending = oh_ntfs_lookup(volume, FILE_root, staged[i].pending,
+                                     &pending_item);
+        if (oh_ntfs_lookup(volume, directory_inode, items[i].destination_name,
+                           &final_item) ||
+            final_item.inode != staged[i].inode || final_item.kind != 1 ||
+            final_item.size != staged[i].size ||
+            final_item.hard_link_count != (pending_expected ? 2u : 1u) ||
+            (pending_expected ? pending != 0 || pending_item.inode != staged[i].inode :
+                                pending != ENOENT))
+            status = EIO;
+    }
+    oh_ntfs_close(volume);
+    return target->io_failed ? EIO : status;
+}
+
+/* Stage 5: temporary names are removed, one directory entry at a time,
+   in a single mount. */
+static int complete_all(Target *target, const char *directory_path,
+                        const OHCopyItem *items, const Staged *staged,
+                        size_t count, Work *work, size_t *failed_index)
+{
+    ntfs_volume *volume = mount_rw(target);
+    if (!volume) return -1;
+    int result = 0;
+    for (size_t i = 0; i < count && !result; ++i) {
+        *failed_index = i;
+        ntfschar *wide = NULL;
+        ntfs_inode *directory = open_directory(volume, directory_path);
+        ntfs_inode *final = directory ?
+            ntfs_pathname_to_inode(volume, directory, items[i].destination_name) : NULL;
+        ntfs_inode *temporary = ntfs_pathname_to_inode(volume, NULL, staged[i].pending);
+        ntfs_inode *root = ntfs_inode_open(volume, FILE_root);
+        int length = ntfs_mbstoucs(staged[i].pending, &wide);
+        int valid = directory && final && temporary && root &&
+            final->mft_no == staged[i].inode && temporary->mft_no == staged[i].inode &&
+            le16_to_cpu(temporary->mrec->link_count) == 2 &&
+            length > 0 && length <= 255;
+        if (final) ntfs_inode_close(final);
+        if (directory) ntfs_inode_close(directory);
+        if (!valid) {
+            if (temporary) ntfs_inode_close(temporary);
+            if (root) ntfs_inode_close(root);
+            errno = EIO;
+            result = -1;
+        } else if (ntfs_delete(volume, staged[i].pending, temporary, root,
+                               wide, (u8)length)) {
+            result = -1; /* ntfs_delete closes both inodes */
+        }
+        free(wide);
+        work_advance(work, OH_PHASE_FINISH, i, UNIT_OVERHEAD / 2);
+    }
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    return result;
 }
 
 typedef struct {
@@ -975,76 +1164,6 @@ static int remove_pending(Target *target, size_t *removed)
     return 0;
 }
 
-static int copy_one(Target *target, const char *directory_path,
-                    uint64_t directory_inode, const OHCopyItem *item,
-                    const struct stat *source, size_t index,
-                    OHCopyProgress progress, void *context, int *stage)
-{
-    char pending[PENDING_LENGTH + 1];
-    OHNTFSItem found;
-    uint32_t warnings = 0;
-    make_pending_name(pending);
-    OHNTFSVolume *volume = NULL;
-    int status = readonly_open(target, &volume, &warnings);
-    if (status) return status;
-    status = warnings ? EBUSY : oh_ntfs_lookup(volume, FILE_root, pending, &found);
-    oh_ntfs_close(volume);
-    if (target->io_failed) return EIO;
-    if (status != ENOENT) return status ? status : EEXIST;
-
-    *stage = 2;
-    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-    if (create_pending(target, item->source_fd, source, pending, index,
-                       progress, context, digest))
-        return phase_error(target);
-    if (target->io_failed) return EIO;
-
-    *stage = 3;
-    #ifdef OPENHDD_TESTING
-    abort_at_stage(3);
-    #endif
-    uint64_t pending_inode = 0, final_inode = 0;
-    status = verify_file(target, FILE_root, pending, (uint64_t)source->st_size,
-                         digest, &pending_inode);
-    if (status || target->io_failed) return status ? status : EIO;
-    status = name_is_free(target, directory_inode, item->destination_name);
-    if (status) return status;
-
-    *stage = 4;
-    #ifdef OPENHDD_TESTING
-    abort_at_stage(4);
-    if (getenv("OPENHDD_TEST_FAIL_BEFORE_PUBLISH")) return EIO;
-    #endif
-    if (publish(target, pending, directory_path, item->destination_name,
-                pending_inode))
-        return phase_error(target);
-    if (target->io_failed) return EIO;
-
-    *stage = 5;
-    #ifdef OPENHDD_TESTING
-    abort_at_stage(5);
-    #endif
-    status = verify_file(target, directory_inode, item->destination_name,
-                         (uint64_t)source->st_size, digest, &final_inode);
-    if (status || final_inode != pending_inode || target->io_failed)
-        return status ? status : EIO;
-    if (complete_pending(target, pending, directory_path,
-                         item->destination_name, final_inode))
-        return phase_error(target);
-    if (target->io_failed) return EIO;
-    status = readonly_open(target, &volume, &warnings);
-    if (status) return status;
-    status = warnings ? EBUSY : oh_ntfs_lookup(volume, FILE_root, pending, &found);
-    oh_ntfs_close(volume);
-    if (status != ENOENT || target->io_failed)
-        return target->io_failed ? EIO : (status ? status : EIO);
-    status = verify_file(target, directory_inode, item->destination_name,
-                         (uint64_t)source->st_size, digest, &final_inode);
-    if (status || final_inode != pending_inode || target->io_failed)
-        return status ? status : EIO;
-    return 0;
-}
-
 int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
                       const char *directory_path,
                       const OHCopyItem *items, size_t count,
@@ -1053,6 +1172,7 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
                       uint32_t *safety_warnings, size_t *removed_pending)
 {
     if (!failure_stage || !safety_warnings || !failed_index) return EINVAL;
+    last_error[0] = 0;
     *failure_stage = 1;
     *failed_index = 0;
     *safety_warnings = 0;
@@ -1069,6 +1189,8 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     ntfs_log_set_handler(ntfs_log_handler_null);
 
     struct stat *sources = calloc(count, sizeof(*sources));
+    Staged *staged = NULL;
+    unsigned char *buffer = NULL;
     if (!sources) return ENOMEM;
     int status = 0;
     uint64_t total = 0;
@@ -1093,7 +1215,14 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     if (status) goto out;
 
     Target target = { .fd = target_fd, .size = target_size,
-                      .is_device = is_device };
+                      .is_device = is_device,
+                      .align = device_alignment(target_fd) };
+    if (!target.align) { status = EIO; goto out; }
+    Work work = { .callback = progress, .context = progress_context,
+                  .count = count,
+                  /* write + one read-back + publish/complete bookkeeping */
+                  .total = 2 * total + (uint64_t)count * UNIT_OVERHEAD };
+    work_report(&work, OH_PHASE_PREPARE, 0);
     uint64_t free_bytes = 0, directory_inode = FILE_root;
     *failed_index = 0;
     status = volume_scan(&target, &free_bytes, safety_warnings);
@@ -1126,22 +1255,49 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
         status = ENOSPC;
         goto out;
     }
+    staged = calloc(count, sizeof(*staged));
+    if (!staged || posix_memalign((void **)&buffer, 4096, IO_CHUNK)) {
+        status = ENOMEM;
+        goto out;
+    }
+    for (size_t i = 0; i < count; ++i) make_pending_name(staged[i].pending);
 
     #ifdef OPENHDD_TESTING
     abort_at_stage(2);
     #endif
     *failure_stage = 2;
     if (set_volume_dirty(&target, 1)) { status = phase_error(&target); goto out; }
+    if (write_all(&target, items, sources, staged, count, buffer, &work,
+                  failed_index)) { status = phase_error(&target); goto out; }
 
-    for (size_t i = 0; i < count; ++i) {
-        *failed_index = i;
-        status = copy_one(&target, directory_path, directory_inode, &items[i],
-                          &sources[i], i, progress, progress_context,
-                          failure_stage);
-        if (status) goto out;
-        if (progress) progress(progress_context, i, (uint64_t)sources[i].st_size,
-                               (uint64_t)sources[i].st_size);
-    }
+    *failure_stage = 3;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(3);
+    #endif
+    status = verify_all(&target, items, directory_inode, staged, count, buffer,
+                        &work, failed_index);
+    if (status) goto out;
+
+    *failure_stage = 4;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(4);
+    if (getenv("OPENHDD_TEST_FAIL_BEFORE_PUBLISH")) { status = EIO; goto out; }
+    #endif
+    if (publish_all(&target, directory_path, items, staged, count, &work,
+                    failed_index)) { status = phase_error(&target); goto out; }
+
+    *failure_stage = 5;
+    #ifdef OPENHDD_TESTING
+    abort_at_stage(5);
+    #endif
+    status = check_names(&target, directory_inode, items, staged, count, 1,
+                         failed_index);
+    if (status) goto out;
+    if (complete_all(&target, directory_path, items, staged, count, &work,
+                     failed_index)) { status = phase_error(&target); goto out; }
+    status = check_names(&target, directory_inode, items, staged, count, 0,
+                         failed_index);
+    if (status) goto out;
 
     *failure_stage = 6;
     #ifdef OPENHDD_TESTING
@@ -1152,12 +1308,16 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     status = volume_scan(&target, NULL, &final_warnings);
     if (status || final_warnings) { status = status ? status : EIO; goto out; }
     *failure_stage = 0;
+    work.done = work.total;
+    work_report(&work, OH_PHASE_FINISH, count - 1);
     #ifdef OPENHDD_TESTING
     abort_at_stage(0);
     if (getenv("OPENHDD_TEST_REPORT_WRITES"))
         fprintf(stderr, "writes=%llu\n", (unsigned long long)target.write_calls);
     #endif
 out:
+    free(buffer);
+    free(staged);
     free(sources);
     return status;
 }

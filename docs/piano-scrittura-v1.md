@@ -68,7 +68,7 @@ dell'utente: un esito negativo riapre il piano.
 | V1 | PASS | `Tests/run-direct-copy-probe.sh`; `Tests/run-powercut-campaign.sh` con strappi a 512 B (5 intatti, 32 marcati, 303 illeggibili da NTFS-3G) e a 4 KiB (5, 321, 14) su 340 tagli ciascuno: nessun volume pulito e alterato |
 | V2 | PASS 22/22 | Base NTFS formattata da Windows 11 26200 (VHD fisso 64 MB, tre file preesistenti). Copia completata: `chkdsk` 0. Interruzioni agli stadi 3/5/6 e 18 tagli di corrente: Windows vede il volume dirty, l'evento NTFS 98 chiede `CHKDSK /F`; `chkdsk /f` → secondo `chkdsk` 0; file preesistenti intatti al loro percorso in tutti i casi. Due casi "illeggibili" avevano errori reali (`chkdsk` 3), corretti (`/f` 1) |
 | V3 | PASS | Disco collegato con `hdiutil`: CLI e codice dell'app (`NTFSCopy.swift`) copiano in radice e in `Documenti`, rimontano in sola lettura; driver macOS legge hash corretti; Windows `chkdsk` 0. Poi copia guidata dall'interfaccia (clic reali): 2 file, messaggio «Copia completata e verificata», hash corretti, `chkdsk` 0. Il collaudo in interfaccia ha trovato un difetto: la copia intermedia di Xcode non conteneva il motore; ora lo incorpora una fase di build |
-| V4 | da eseguire | Checklist nel README |
+| V4 | PASS | Chiavetta reale: copie, scollegamento fisico, riparazione su Windows, ripresa (sezione sotto) |
 
 Osservazioni:
 
@@ -83,6 +83,38 @@ Osservazioni:
 - Il dirty bit protegge solo se il dispositivo rispetta il flush
   (`DKIOCSYNCHRONIZECACHE`). Un controller che mente sul flush resta un
   rischio residuo, da misurare con V4.
+
+## V4 in corso — lezioni dalla chiavetta reale (28 settembre 2026)
+
+Prima copia reale su `USB DISK 2.0` riformattata da Windows (`OPENHDD-V4`):
+1,5 GiB più un file con nome accentato, hash corretti sul Mac, file
+preesistenti intatti. Quattro problemi trovati solo sull'hardware reale:
+
+| Problema | Causa | Correzione |
+|---|---|---|
+| «source is not a regular file readable» | Il motore lanciato come amministratore via AppleScript non può leggere la Scrivania (protezione privacy di macOS, iCloud Desktop) | Il motore gira come utente, figlio dell'app, con i suoi permessi sui file scelti |
+| «exclusive open: Operation not permitted» | macOS nega l'apertura in scrittura del disco al processo amministratore lanciato da AppleScript, anche con Accesso completo al disco | Accesso al disco tramite `/usr/libexec/authopen` con un'unica autorizzazione (`-extauth`) per i due device |
+| 4 MB/s, verifica tre volte più lunga della scrittura | Device a blocchi bufferizzato: macOS spezza l'I/O in comandi da 16 KB; tre riletture complete | I/O sul device raw a blocchi da 4 MB con strato di allineamento per i metadati; fasi a lotto con una sola rilettura dal disco |
+| Barra ferma al 100% e stato «Trasferimento in corso» dopo la fine | La barra misurava solo la scrittura; la riga della lista non si ridisegnava | Barra unica pesata su scrittura e verifica, fase, velocità e tempo rimanente; stato incluso nell'identità della riga |
+
+Dopo le correzioni, V4 completato sulla stessa chiavetta:
+
+| Passo | Esito |
+|---|---|
+| Copia da 1,5 GB con il nuovo motore | 8 min contro 20 (scrittura limitata dalla chiavetta a ~4,4 MB/s con trasferimenti da 2 MB; verifica una sola volta a ~17 MB/s) |
+| Scollegamento fisico durante la scrittura | L'app rileva «Device not configured», nessun falso successo; su Windows volume dirty, `chkdsk` senza incoerenze, `chkdsk /f` pulito, file preesistenti e copie precedenti intatti, nome finale non pubblicato |
+| Ripresa dal Mac | Temporaneo rimosso, marcatore locale sbloccato, copia completata con hash corretto |
+| Controllo finale su Windows | `chkdsk` «Nessun problema rilevato», 7 file con hash attesi |
+
+Altri due casi trovati durante V4: il controllo «sorgente cambiata» scattava
+per un attributo aggiunto da macOS al file scelto (ora conta solo il
+contenuto); un disco staccato da Windows senza rimozione sicura ha il journal
+aperto e viene rifiutato (comportamento corretto; ora il messaggio lo dice).
+
+Sul device raw `O_EXCL` non impedisce il montaggio (prova su immagine): per
+questo il device a blocchi resta aperto in esclusiva per tutta la copia.
+Dopo le modifiche: suite su immagini verde, campagna di tagli con 21 scritture
+per copia (erano 85) e zero violazioni, anche con settori da 4 KiB emulati.
 
 ## Fase 2
 

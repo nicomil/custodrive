@@ -17,6 +17,67 @@ struct CopyPlan {
     var destinationLabel: String { directory.map { "cartella «\($0)»" } ?? "cartella principale" }
 }
 
+extension String {
+    var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
+}
+
+/// One snapshot of the whole operation, as reported by the copy tool.
+struct CopyProgress {
+    let phase: Int
+    let fileIndex: Int
+    let fileCount: Int
+    let done: UInt64
+    let total: UInt64
+
+    var fraction: Double { min(1, Double(done) / Double(total)) }
+
+    func label(names: [String]) -> String {
+        let name = fileIndex < names.count ? "«\(names[fileIndex])»" : ""
+        switch phase {
+        case 0: return "Controlli preliminari del disco"
+        case 1: return "Scrittura di \(name)"
+        case 2: return "Sincronizzazione del disco"
+        case 3: return "Verifica di \(name) (rilettura dal disco)"
+        case 4: return "Pubblicazione dei nomi dei file"
+        default: return "Chiusura e controllo finale"
+        }
+    }
+}
+
+/// Speed and remaining time from the measured throughput, smoothed so the
+/// estimate does not jump with every sample.
+struct TransferClock {
+    private var lastDone: UInt64 = 0
+    private var lastTime: TimeInterval = 0
+    private var started: TimeInterval = 0
+    private(set) var unitsPerSecond: Double = 0
+
+    mutating func update(_ progress: CopyProgress, now: TimeInterval) {
+        if started == 0 { started = now; lastTime = now; lastDone = progress.done; return }
+        let elapsed = now - lastTime
+        guard elapsed >= 0.8 else { return }
+        let rate = Double(progress.done &- min(progress.done, lastDone)) / elapsed
+        unitsPerSecond = unitsPerSecond == 0 ? rate : unitsPerSecond * 0.7 + rate * 0.3
+        lastTime = now
+        lastDone = progress.done
+    }
+
+    func remaining(_ progress: CopyProgress, now: TimeInterval) -> String {
+        guard now - started >= 3, unitsPerSecond > 1 else { return "Stima del tempo in corso…" }
+        let seconds = Double(progress.total - min(progress.total, progress.done)) / unitsPerSecond
+        switch seconds {
+        case ..<45: return "Meno di un minuto"
+        case ..<5400: return "Circa \(Int((seconds / 60).rounded(.up))) min"
+        default: return String(format: "Circa %.1f ore", seconds / 3600)
+        }
+    }
+
+    var speed: String {
+        unitsPerSecond > 0 ?
+            ByteCountFormatter.string(fromByteCount: Int64(unitsPerSecond), countStyle: .file) + "/s" : ""
+    }
+}
+
 enum CopyOutcome {
     case success(String)
     case cancelled
@@ -53,14 +114,7 @@ enum NTFSCopyRunner {
         name.precomposedStringWithCanonicalMapping
     }
 
-    private static func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 
-    private static func appleScriptLiteral(_ value: String) -> String {
-        value.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-    }
 
     /// Devices the user owns (disk images) are opened directly; a USB drive
     /// needs administrator rights, asked by macOS for this one operation.
@@ -80,18 +134,12 @@ enum NTFSCopyRunner {
             arguments += [source.path, name]
         }
 
+        // The tool runs as the user, so it reads the chosen files with the
+        // app's permissions; for a USB drive it asks macOS (authopen) for an
+        // administrator-authorised descriptor of that one partition only.
         let process = Process()
-        if needsAdministrator(plan.partition) {
-            let command = ([tool.path] + arguments).map(shellQuote).joined(separator: " ") + " 2>&1"
-            let prompt = "OpenHDD deve scrivere sul disco NTFS «\(plan.volumeName)»."
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e",
-                "do shell script \"\(appleScriptLiteral(command))\" with administrator privileges " +
-                "with prompt \"\(appleScriptLiteral(prompt))\""]
-        } else {
-            process.executableURL = tool
-            process.arguments = arguments
-        }
+        process.executableURL = tool
+        process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
@@ -102,7 +150,9 @@ enum NTFSCopyRunner {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         let text = String(decoding: data, as: UTF8.self)
-        if text.contains("(-128)") { return .cancelled }
+        if text.contains("(-128)") || text.contains("authorization for the drive was denied") {
+            return .cancelled
+        }
         if process.terminationStatus == 0, text.contains("PASS:") {
             return .success(summary(of: text, plan: plan))
         }
@@ -124,40 +174,45 @@ enum NTFSCopyRunner {
     /// Translates the tool's diagnostics into a short Italian message.
     private static func explanation(of text: String) -> String {
         let rules: [(String, String)] = [
+            ("journal state suspect", "Windows non ha chiuso correttamente il disco (journal NTFS aperto): era ancora in uso quando è stato scollegato. Ricollegalo a Windows, usa «Rimozione sicura dell'hardware» ed espellilo, poi riprova."),
+            ("hibernation state uncertain", "Windows è in ibernazione o con Avvio rapido attivo su questo disco. Spegni Windows completamente (non solo sospensione) e riprova."),
             ("dirty volume", "Il disco risulta da controllare (volume «dirty»). Collegalo a Windows ed esegui «chkdsk X: /f» prima di scrivere."),
             ("unfinished OpenHDD transfer", "Una copia precedente è stata interrotta. Collegalo a Windows ed esegui «chkdsk X: /f», poi riprova."),
             ("previous OpenHDD transfer unresolved", "Una copia precedente su questo Mac non si è conclusa. Controlla il disco su Windows con «chkdsk X: /f», poi riprova."),
-            ("hibernation state uncertain", "Windows è in ibernazione o con Avvio rapido attivo su questo disco. Spegni Windows completamente e riprova."),
-            ("journal state suspect", "Il journal NTFS non è pulito: il disco non è stato espulso correttamente da Windows. Ricollegalo a Windows ed espellilo."),
             ("$TXF_DATA", "Il volume contiene dati transazionali Windows che OpenHDD non modifica."),
             ("already exists", "Esiste già un file con lo stesso nome (senza distinguere maiuscole e minuscole). Rinomina il file di origine."),
             ("not enough free space", "Spazio libero insufficiente sul disco NTFS."),
             ("destination folder not found", "La cartella di destinazione non esiste più sul disco."),
             ("normal unmount failed", "macOS non riesce a smontare il disco: chiudi i file aperti da quel disco e riprova."),
             ("not an external NTFS partition", "Il disco selezionato non è una partizione NTFS esterna."),
+            ("exclusive open", "macOS non ha lasciato l'accesso esclusivo al disco: un'altra app o il sistema lo sta usando. Chiudi i file aperti dal disco e riprova."),
+            ("geometry", "La geometria del disco non corrisponde a quella attesa: operazione annullata."),
             ("identity", "Il disco è cambiato o è stato scollegato durante l'operazione."),
             ("invalid new file name", "Uno dei nomi non è valido per Windows."),
             ("not a regular file readable", "Uno dei file di origine non è leggibile."),
+            ("could not be opened", "Uno dei file di origine non si può aprire."),
+            ("changed while it was being copied", "Uno dei file di origine è stato modificato durante la copia: nessun file è stato pubblicato."),
         ]
         var message = rules.first(where: { text.contains($0.0) })?.1 ?? "Copia non riuscita."
         if text.contains("marked for checking") {
             message += " La copia si è interrotta dopo l'inizio della scrittura: i file già presenti non sono stati modificati, ma il disco va controllato su Windows con «chkdsk X: /f» prima di scriverci di nuovo."
         }
         let lines = text.split(separator: "\n").map(String.init)
-        let detail = lines.first(where: { $0.hasPrefix("Refused") || $0.hasPrefix("Copy failed") }) ??
+        let detail = lines.first(where: { $0.hasPrefix("Detail:") }) ??
+            lines.first(where: { $0.hasPrefix("Refused") || $0.hasPrefix("Copy failed") }) ??
             lines.last(where: { !$0.isEmpty && !$0.hasPrefix("NO SUCCESS") }) ?? ""
-        return detail.isEmpty ? message : message + "\nDettaglio: " + detail
+        let shown = detail.hasPrefix("Detail: ") ? String(detail.dropFirst(8)) : detail
+        return shown.isEmpty ? message : message + "\nDettaglio: " + shown
     }
 
-    /// Reads the tool's progress line: "index count done total".
-    static func readProgress(_ file: URL, plan: CopyPlan) -> Double? {
+    /// Reads the tool's progress line: "phase file count done total".
+    static func readProgress(_ file: URL) -> CopyProgress? {
         guard let line = try? String(contentsOf: file, encoding: .utf8) else { return nil }
-        let parts = line.split(separator: " ").compactMap { UInt64($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        guard parts.count == 4, plan.totalBytes > 0 else { return nil }
-        let index = Int(parts[0])
-        guard index < plan.sizes.count else { return nil }
-        let before = plan.sizes.prefix(index).reduce(0, +)
-        return min(1, Double(before + parts[2]) / Double(plan.totalBytes))
+        let parts = line.split(separator: " ")
+            .compactMap { UInt64($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        guard parts.count == 5, parts[4] > 0, parts[0] <= 5 else { return nil }
+        return CopyProgress(phase: Int(parts[0]), fileIndex: Int(parts[1]),
+                            fileCount: Int(parts[2]), done: parts[3], total: parts[4])
     }
 }
 #endif

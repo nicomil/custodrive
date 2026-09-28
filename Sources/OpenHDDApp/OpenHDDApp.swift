@@ -164,6 +164,8 @@ final class DiskStore: ObservableObject {
     @Published var busy = false
     @Published var copyProgress: Double?
     @Published var copyTitle = ""
+    @Published var copyDetail = ""
+    @Published var copyRemaining = ""
     @Published private var statusOverrides: [String: String] = [:]
 
     private let session: DASession
@@ -576,13 +578,24 @@ extension DiskStore {
         message = NTFSCopyRunner.needsAdministrator(plan.partition) ?
             "macOS chiederà la password di amministratore per scrivere sul disco." :
             "Copia in corso…"
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+        copyDetail = "Preparazione…"
+        copyRemaining = ""
+        var clock = TransferClock()
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                if let value = NTFSCopyRunner.readProgress(progressFile, plan: plan) {
-                    self?.copyProgress = value
-                    self?.message = value < 1 ? "Copia in corso… non scollegare il disco." :
-                        "Verifica e chiusura in corso… non scollegare il disco."
+                guard let self, let progress = NTFSCopyRunner.readProgress(progressFile) else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                clock.update(progress, now: now)
+                self.copyProgress = progress.fraction
+                var detail = "File \(progress.fileIndex + 1) di \(progress.fileCount) · " +
+                    progress.label(names: plan.names)
+                if (progress.phase == 1 || progress.phase == 3), !clock.speed.isEmpty {
+                    detail += " · " + clock.speed
                 }
+                self.copyDetail = detail
+                self.copyRemaining = progress.done >= progress.total ?
+                    "Quasi finito" : "Tempo rimanente: " + clock.remaining(progress, now: now).lowercasedFirst
+                self.message = "Non scollegare il disco finché non compare «Copia completata»."
             }
         }
         Task.detached { [store = self] in
@@ -598,6 +611,8 @@ extension DiskStore {
     private func finishCopy(_ outcome: CopyOutcome, record: DiskRecord) {
         busy = false
         copyProgress = nil
+        copyDetail = ""
+        copyRemaining = ""
         switch outcome {
         case .success(let text):
             statusOverrides.removeValue(forKey: record.bsdName)
@@ -642,7 +657,9 @@ private struct ContentView: View {
                 .foregroundStyle(.secondary)
             #endif
             List(selection: $store.selected) {
-                ForEach(store.records) { disk in
+                // The status is part of the row identity: List rows on macOS
+                // are redrawn only when their data changes.
+                ForEach(store.records, id: \.bsdName) { disk in
                     HStack {
                         Image(systemName: "externaldrive")
                         VStack(alignment: .leading) {
@@ -654,11 +671,21 @@ private struct ContentView: View {
                         Text(store.state(for: disk)).font(.caption)
                     }
                     .tag(disk.id)
+                    .id("\(disk.bsdName)|\(store.state(for: disk))")
                 }
             }
             #if OPENHDD_LOCAL
             if let progress = store.copyProgress {
-                ProgressView(value: progress) { Text(store.copyTitle).font(.callout) }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(store.copyTitle).font(.callout.bold())
+                        Spacer()
+                        Text("\(Int(progress * 100)) %").font(.callout.monospacedDigit())
+                    }
+                    ProgressView(value: progress)
+                    Text(store.copyDetail).font(.caption)
+                    Text(store.copyRemaining).font(.caption).foregroundStyle(.secondary)
+                }
             }
             #endif
             Text(store.message).font(.callout).foregroundStyle(.secondary)

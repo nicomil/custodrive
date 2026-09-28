@@ -16,8 +16,13 @@ open Build/OpenHDDLocal.app
 2. Premi **Copia sul disco…**, scegli uno o più file e la destinazione: la
    cartella principale o una cartella esistente del disco.
 3. Conferma. Per una chiavetta o un disco USB macOS chiede la password di
-   amministratore, solo per questa operazione.
-4. Attendi il messaggio **«Copia completata e verificata»**: il disco torna
+   amministratore con il pannello di sistema di `authopen`: l'autorizzazione
+   vale solo per aprire quella partizione, il resto della copia gira con i
+   permessi dell'app.
+4. Segui la barra: mostra fase (scrittura, sincronizzazione, verifica,
+   pubblicazione, chiusura), file corrente, velocità misurata e tempo
+   rimanente per l'intera operazione.
+5. Attendi il messaggio **«Copia completata e verificata»**: il disco torna
    montato in sola lettura e i file nuovi sono visibili nel Finder. Poi usa
    **Espelli** prima di scollegarlo.
 
@@ -43,7 +48,19 @@ Cosa garantisce la copia ([piano v1](docs/piano-scrittura-v1.md)):
 Se compare «Copia non completata: controlla il disco su Windows»: collega il
 disco a un PC Windows, apri il Prompt dei comandi come amministratore ed esegui
 `chkdsk X: /f`, dove X è la lettera del disco. Poi puoi tornare a usarlo con
-OpenHDD.
+OpenHDD. Se Windows propone di **formattare** il disco, rifiuta: dopo
+un'interruzione basta `chkdsk X: /f`.
+
+Prima di portare un disco da Windows al Mac, usa sempre **Rimozione sicura
+dell'hardware** su Windows. Un disco staccato mentre Windows lo teneva aperto
+ha il journal NTFS non chiuso, e OpenHDD rifiuta di scriverci finché non viene
+ricollegato a Windows ed espulso correttamente.
+
+Prestazioni: tutto l'I/O passa dal device raw (`/dev/rdiskXsY`) a blocchi fino
+a 4 MB; il device normale resta aperto in esclusiva solo per impedire che il
+volume venga rimontato durante la copia. I file di un lotto vengono prima
+scritti tutti, poi riletti una sola volta dal disco, poi pubblicati: i
+montaggi NTFS sono pochi e costanti anche con migliaia di foto.
 
 Fuori da questa versione: sovrascrivere, cancellare o rinominare file,
 scrivere dal Finder, creare cartelle, file compressi o cifrati.
@@ -66,7 +83,7 @@ sudo Build/OpenHDDCopy --check-disk disk4s1        # controllo in sola lettura
 | V1 | `Tests/run-powercut-campaign.sh`: taglio di corrente con cache volatile a **ogni** scrittura di una copia, 4 semi, strappi a 512 B e 4 KiB (680 casi) | PASS: 0 volumi "puliti ma alterati" |
 | V2 | `Tests/prepare-windows-v1-cases.sh` + `Tests/windows/verify-v1-cases.ps1` su una base formattata da Windows 11 (build 26200): copia completata, 3 interruzioni a stadi precisi, 18 tagli di corrente | **22/22 PASS**: copia completata con `chkdsk` pulito; ogni interruzione riparata da `chkdsk /f`, secondo `chkdsk` pulito, file preesistenti intatti al loro posto |
 | V3 | Copia su un disco collegato a macOS (`hdiutil`) con la CLI e **dall'interfaccia dell'app** (selezione disco, scelta file, destinazione, conferma), rimontaggio in sola lettura, poi verifica su Windows | PASS: `chkdsk` pulito, hash corretti |
-| V4 | Chiavetta USB sacrificabile: copie normali e scollegamento durante una copia, poi Windows | **da eseguire** (checklist sotto) |
+| V4 | Chiavetta USB 2.0 reale (`USB DISK 2.0`, 3,9 GB) formattata da Windows: copie da 1,5 GB, scollegamento fisico durante la scrittura, riparazione su Windows, ripresa dal Mac | **PASS** (28 settembre 2026): dopo lo scollegamento Windows vede il volume da controllare, `chkdsk` non trova incoerenze, nessun file a metà pubblicato; la copia successiva pulisce e completa; controllo finale `chkdsk` pulito e tutti gli hash corretti |
 
 I test su immagini non sostituiscono il collaudo sull'hardware reale: il
 controller USB può riordinare o perdere scritture in modi che il simulatore non

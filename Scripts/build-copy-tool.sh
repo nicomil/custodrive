@@ -21,7 +21,7 @@ cc -std=c11 -O2 -arch arm64 -mmacosx-version-min=15.4 \
   "$project_dir/Sources/NTFSWrite/WriteEngine.c" \
   "$project_dir/Sources/NTFSWrite/OpenHDDCopy.c" \
   "$project_dir/Build/ntfs3g/libntfs-3g/.libs/libntfs-3g.a" \
-  -framework CoreFoundation -framework DiskArbitration -framework IOKit \
+  -framework CoreFoundation -framework DiskArbitration -framework IOKit -framework Security \
   -o "$output"
 
 cc -std=c11 -O2 -arch arm64 -mmacosx-version-min=15.4 \

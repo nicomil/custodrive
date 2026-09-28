@@ -4,6 +4,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
 #include <IOKit/IOKitLib.h>
+#include <Security/Authorization.h>
+#include <Security/AuthorizationTags.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -14,7 +16,10 @@
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* A local marker survives process death even if NTFS lost its pending name
@@ -357,6 +362,7 @@ typedef struct {
 typedef struct {
     int fd;
     size_t count;
+    int last_phase;
 } ProgressFile;
 
 static int confirm_disk(DiskLease *lease, const char *name);
@@ -392,22 +398,26 @@ static void request_free(CopyRequest *request)
     free((char *)request->directory);
 }
 
-static void report_progress(void *opaque, size_t index, uint64_t done,
-                            uint64_t total)
+/* One line, rewritten in place: "phase file count done total". */
+static void report_progress(void *opaque, int phase, size_t index, size_t count,
+                            uint64_t done, uint64_t total)
 {
     ProgressFile *progress = opaque;
     char line[128];
-    int length = snprintf(line, sizeof(line), "%zu %zu %llu %llu\n", index,
-                          progress->count, (unsigned long long)done,
+    int length = snprintf(line, sizeof(line), "%d %zu %zu %llu %llu\n", phase,
+                          index, count, (unsigned long long)done,
                           (unsigned long long)total);
     if (progress->fd >= 0 && length > 0) {
         /* The file holds only the latest line; errors are not fatal. */
         if (pwrite(progress->fd, line, (size_t)length, 0) == length)
             (void)ftruncate(progress->fd, length);
-    } else if (progress->fd < 0 && done == total && total >= 64ULL * 1024 * 1024) {
-        fprintf(stderr, "File %zu/%zu: %llu MiB written, verifying.\n",
-                index + 1, progress->count,
-                (unsigned long long)(total / (1024 * 1024)));
+    } else if (progress->fd < 0 && phase != progress->last_phase) {
+        static const char *names[] = { "Checking", "Writing", "Syncing",
+                                       "Verifying", "Publishing", "Finishing" };
+        if (phase >= 0 && phase <= 5)
+            fprintf(stderr, "%s... (%llu%%)\n", names[phase],
+                    total ? (unsigned long long)(done * 100 / total) : 0ULL);
+        progress->last_phase = phase;
     }
 }
 
@@ -434,7 +444,12 @@ static int open_sources(const CopyRequest *request, long owner_uid,
     for (size_t i = 0; i < request->count; ++i) {
         struct stat state;
         int fd = open(request->sources[i], O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-        if (fd < 0 || fstat(fd, &state) || !S_ISREG(state.st_mode) ||
+        if (fd < 0) {
+            fprintf(stderr, "Refused: source %zu could not be opened: %s.\n",
+                    i + 1, strerror(errno));
+            return -1;
+        }
+        if (fstat(fd, &state) || !S_ISREG(state.st_mode) ||
             (owner_uid >= 0 && state.st_uid != (uid_t)owner_uid &&
              !(state.st_mode & S_IROTH))) {
             if (fd >= 0) close(fd);
@@ -479,6 +494,11 @@ static void explain_failure(int code, int stage, size_t index, size_t count,
             fputs("Preflight refused: volume busy or safety state uncertain; "
                   "no writes started.\n", stderr);
     }
+    if (code == ESTALE)
+        fprintf(stderr, "Refused: source %zu changed while it was being copied; "
+                        "nothing was published.\n", index + 1);
+    if (*oh_last_error())
+        fprintf(stderr, "Detail: %s.\n", oh_last_error());
     fprintf(stderr, "Copy failed at stage %d; code %d; item %zu of %zu.\n",
             stage, code, index + 1, count);
     if (stage >= 2)
@@ -533,7 +553,7 @@ static int run_image(const CopyRequest *request)
         goto out;
     }
     ProgressFile progress = { .fd = open_progress(request->progress_path, -1),
-                              .count = request->count };
+                              .count = request->count, .last_phase = -1 };
     size_t removed = 0;
     int code = oh_copy_new_files(target, (uint64_t)after.st_size, 0,
                                  request->directory, items, request->count,
@@ -557,6 +577,107 @@ out:
     return result;
 }
 
+/* Asks macOS once for both rights authopen needs: an exclusive read-only
+   open of the block device (it keeps the volume from being mounted) and a
+   read-write open of the raw device used for fast I/O. */
+static int authorize_device(const char *block, const char *raw,
+                            const char *volume_name,
+                            AuthorizationExternalForm *external)
+{
+    char read_right[128], write_right[128], prompt[512];
+    snprintf(read_right, sizeof(read_right), "sys.openfile.readonly.%s", block);
+    snprintf(write_right, sizeof(write_right), "sys.openfile.readwrite.%s", raw);
+    snprintf(prompt, sizeof(prompt),
+             "OpenHDD deve scrivere sul disco NTFS \xC2\xAB%s\xC2\xBB.",
+             volume_name && *volume_name ? volume_name : "esterno");
+    AuthorizationItem rights[] = {
+        { read_right, 0, NULL, 0 }, { write_right, 0, NULL, 0 } };
+    AuthorizationRights set = { 2, rights };
+    AuthorizationItem prompt_item = { kAuthorizationEnvironmentPrompt,
+                                      strlen(prompt), prompt, 0 };
+    AuthorizationEnvironment environment = { 1, &prompt_item };
+    AuthorizationRef authorization = NULL;
+    OSStatus status = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment,
+                                          kAuthorizationFlagDefaults, &authorization);
+    if (status == errAuthorizationSuccess)
+        status = AuthorizationCopyRights(authorization, &set, &environment,
+            kAuthorizationFlagInteractionAllowed | kAuthorizationFlagExtendRights |
+            kAuthorizationFlagPreAuthorize, NULL);
+    if (status == errAuthorizationSuccess)
+        status = AuthorizationMakeExternalForm(authorization, external);
+    /* The external form stays valid while this process keeps the reference. */
+    return status == errAuthorizationSuccess ? 0 : -1;
+}
+
+/* Opens the partition through Apple's authopen: macOS asks for an
+   administrator password and hands back only this descriptor, so the copy
+   itself keeps running as the user (with the app's file permissions). */
+static int authopen_device(const char *path, int flags,
+                           const AuthorizationExternalForm *authorization)
+{
+    int pair[2], input[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair)) return -1;
+    if (pipe(input)) { close(pair[0]); close(pair[1]); return -1; }
+    pid_t child = fork();
+    if (child < 0) {
+        close(pair[0]); close(pair[1]); close(input[0]); close(input[1]);
+        return -1;
+    }
+    if (child == 0) {
+        char text[16];
+        snprintf(text, sizeof(text), "%d", flags);
+        if (dup2(pair[1], STDOUT_FILENO) < 0 || dup2(input[0], STDIN_FILENO) < 0)
+            _exit(127);
+        close(pair[0]); close(pair[1]); close(input[0]); close(input[1]);
+        execl("/usr/libexec/authopen", "authopen", "-stdoutpipe", "-extauth",
+              "-o", text, path, (char *)NULL);
+        _exit(127);
+    }
+    close(input[0]);
+    ssize_t sent = write(input[1], authorization, sizeof(*authorization));
+    close(input[1]);
+    if (sent != (ssize_t)sizeof(*authorization)) {
+        close(pair[0]); close(pair[1]);
+        waitpid(child, NULL, 0);
+        errno = EACCES;
+        return -1;
+    }
+    close(pair[1]);
+    int fd = -1;
+    char byte = 0;
+    union {
+        struct cmsghdr header;
+        char space[CMSG_SPACE(sizeof(int))];
+    } control;
+    struct iovec vector = { .iov_base = &byte, .iov_len = 1 };
+    struct msghdr message = {
+        .msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control.space, .msg_controllen = sizeof(control.space)
+    };
+    ssize_t got;
+    do got = recvmsg(pair[0], &message, 0); while (got < 0 && errno == EINTR);
+    struct cmsghdr *header = got > 0 ? CMSG_FIRSTHDR(&message) : NULL;
+    if (header && header->cmsg_level == SOL_SOCKET &&
+        header->cmsg_type == SCM_RIGHTS &&
+        header->cmsg_len == CMSG_LEN(sizeof(int)))
+        memcpy(&fd, CMSG_DATA(header), sizeof(fd));
+    close(pair[0]);
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    if (fd >= 0 && (!WIFEXITED(status) || WEXITSTATUS(status))) {
+        close(fd);
+        fd = -1;
+    }
+    if (fd < 0) { errno = EACCES; return -1; }
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) ||
+        (fcntl(fd, F_GETFL) & O_ACCMODE) != (flags & O_ACCMODE)) {
+        close(fd);
+        errno = EACCES;
+        return -1;
+    }
+    return fd;
+}
+
 static int run_disk(const CopyRequest *request)
 {
     const char *name = request->target;
@@ -566,7 +687,7 @@ static int run_disk(const CopyRequest *request)
               "give --owner-uid or run through sudo.\n", stderr);
         return 1;
     }
-    int result = 1, stage = 0, target = -1;
+    int result = 1, stage = 0, target = -1, hold = -1;
     int quarantine_dir = -1, quarantine_active = 0;
     char quarantine_file[80] = {0};
     uint32_t warnings = 0;
@@ -608,18 +729,71 @@ static int run_disk(const CopyRequest *request)
     }
     char path[64];
     snprintf(path, sizeof(path), "/dev/%s", name);
-    target = open(path, O_RDWR | O_EXCL | O_NOFOLLOW | O_CLOEXEC);
-    struct stat target_info;
+    /* The file-system service may release the device a moment after the
+       unmount completes; only "busy" is retried, for up to five seconds. */
+    char raw_path[64];
+    snprintf(raw_path, sizeof(raw_path), "/dev/r%s", name);
+    int via_authopen = geteuid() != 0 &&
+        (access(path, R_OK) != 0 || access(raw_path, R_OK | W_OK) != 0);
+    AuthorizationExternalForm external;
+    if (via_authopen) {
+        char volume[256] = "";
+        (void)display_value(lease.partition, kDADiskDescriptionVolumeNameKey,
+                            volume, sizeof(volume));
+        if (authorize_device(path, raw_path, volume, &external)) {
+            fputs("Refused: administrator authorization for the drive was denied "
+                  "or cancelled; nothing written.\n", stderr);
+            goto out;
+        }
+    }
+    /* The block device held exclusively keeps anyone from mounting the
+       volume; all I/O goes through the raw device in large transfers. The
+       file-system service may release the device a moment after the unmount
+       completes, so only "busy" is retried, for up to five seconds. */
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        hold = via_authopen ? authopen_device(path, O_RDONLY | O_EXCL, &external) :
+            open(path, O_RDONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC);
+        if (hold >= 0 || errno != EBUSY) break;
+        usleep(250000);
+    }
+    if (hold < 0) {
+        fprintf(stderr, "Refused: device access failed: exclusive open of %s: %s.\n",
+                path, strerror(errno));
+        goto out;
+    }
+    target = via_authopen ? authopen_device(raw_path, O_RDWR, &external) :
+        open(raw_path, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+    struct stat target_info, hold_info;
     uint32_t block_size = 0;
     uint64_t block_count = 0;
-    if (target < 0 || fstat(target, &target_info) ||
-        !S_ISBLK(target_info.st_mode) ||
-        ioctl(target, DKIOCGETBLOCKSIZE, &block_size) ||
-        ioctl(target, DKIOCGETBLOCKCOUNT, &block_count) ||
-        block_size < 512 || block_size > 65536 ||
-        block_count != lease.size / block_size ||
-        lease.size % block_size || inspect_partition(&lease, name, 1)) {
-        fputs("Refused: device access, geometry or identity failed.\n", stderr);
+    if (target < 0) {
+        fprintf(stderr, "Refused: device access failed: open of %s: %s.\n",
+                raw_path, strerror(errno));
+        goto out;
+    }
+    if (fstat(target, &target_info) || !S_ISCHR(target_info.st_mode) ||
+        fstat(hold, &hold_info) || !S_ISBLK(hold_info.st_mode) ||
+        target_info.st_rdev != hold_info.st_rdev) {
+        fputs("Refused: device access failed: raw and block devices do not match.\n",
+              stderr);
+        goto out;
+    }
+    if (ioctl(target, DKIOCGETBLOCKSIZE, &block_size) ||
+        ioctl(target, DKIOCGETBLOCKCOUNT, &block_count)) {
+        fprintf(stderr, "Refused: device access failed: geometry query: %s.\n",
+                strerror(errno));
+        goto out;
+    }
+    if (block_size < 512 || block_size > 65536 ||
+        block_count != lease.size / block_size || lease.size % block_size) {
+        fprintf(stderr, "Refused: device geometry mismatch: block size %u, count "
+                "%llu, expected %llu bytes.\n", block_size,
+                (unsigned long long)block_count, (unsigned long long)lease.size);
+        goto out;
+    }
+    if (inspect_partition(&lease, name, 1)) {
+        fputs("Refused: device identity changed after the exclusive open.\n",
+              stderr);
         goto out;
     }
     /* A marker left by an earlier session no longer blocks forever: the
@@ -632,9 +806,12 @@ static int run_disk(const CopyRequest *request)
                                                     &free_bytes, &marker_warnings);
         /* Leftover temporaries on a clean volume are removed by the copy. */
         if (marker_check && !(marker_check == EINPROGRESS && !marker_warnings)) {
-            print_safety_warnings(marker_warnings);
-            fputs("Refused: previous OpenHDD transfer unresolved on this Mac. "
-                  "Check the volume on Windows (chkdsk X: /f) first.\n", stderr);
+            /* The volume's own state is the actionable reason; the local
+               marker is only mentioned when nothing else is wrong. */
+            if (marker_warnings) print_safety_warnings(marker_warnings);
+            else
+                fputs("Refused: previous OpenHDD transfer unresolved on this Mac. "
+                      "Check the volume on Windows (chkdsk X: /f) first.\n", stderr);
             goto out;
         }
         char stale[80];
@@ -662,7 +839,7 @@ static int run_disk(const CopyRequest *request)
     quarantine_active = 1;
     ProgressFile progress = {
         .fd = open_progress(request->progress_path, owner_uid),
-        .count = request->count };
+        .count = request->count, .last_phase = -1 };
     size_t removed = 0;
     int code = oh_copy_new_files(target, lease.size, 1, request->directory,
                                  items, request->count, report_progress,
@@ -692,6 +869,8 @@ out:
         fputs("Device close failed; no success reported.\n", stderr);
         result = 1;
     }
+    /* Last close of the block device drops any cached blocks of the volume. */
+    if (hold >= 0) close(hold);
     if (lease.claimed) {
         int same_device = inspect_partition(&lease, name, 1) == 0;
         DADiskUnclaim(lease.whole);
