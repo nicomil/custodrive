@@ -16,6 +16,7 @@
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -357,6 +358,13 @@ typedef struct {
     size_t count;
     const char **sources;
     char **names;                /* NFC copies owned by the request */
+    char **folders;              /* per-file folder (NFC) from a manifest */
+    unsigned char *replace;      /* per-file replace flag from a manifest */
+    int replace_all;             /* --replace for SOURCE NAME pairs */
+    uint64_t *sizes;             /* filled by check_sources */
+    char **directories;          /* folders to create, parents first */
+    size_t directory_count;
+    char *manifest;              /* raw manifest; source paths point into it */
     int edit_kind;               /* 0 for a copy, else OH_EDIT_* */
     size_t edit_count;
     OHEdit *edits;
@@ -398,6 +406,15 @@ static void request_free(CopyRequest *request)
 {
     if (request->names)
         for (size_t i = 0; i < request->count; ++i) free(request->names[i]);
+    if (request->folders)
+        for (size_t i = 0; i < request->count; ++i) free(request->folders[i]);
+    for (size_t i = 0; request->directories && i < request->directory_count; ++i)
+        free(request->directories[i]);
+    free(request->folders);
+    free(request->directories);
+    free(request->replace);
+    free(request->sizes);
+    free(request->manifest);
     for (size_t i = 0; i < request->edit_string_count; ++i) free(request->edit_strings[i]);
     free(request->edit_strings);
     free(request->edits);
@@ -445,28 +462,55 @@ static int open_progress(const char *path, long owner_uid)
     return fd;
 }
 
-static int open_sources(const CopyRequest *request, long owner_uid,
-                        OHCopyItem *items)
+static int open_source(const CopyRequest *request, long owner_uid, size_t i,
+                       uint64_t *size)
 {
-    for (size_t i = 0; i < request->count; ++i) items[i].source_fd = -1;
+    struct stat state;
+    int fd = open(request->sources[i], O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "Refused: source %zu could not be opened: %s.\n",
+                i + 1, strerror(errno));
+        return -1;
+    }
+    if (fstat(fd, &state) || !S_ISREG(state.st_mode) ||
+        (owner_uid >= 0 && state.st_uid != (uid_t)owner_uid &&
+         !(state.st_mode & S_IROTH))) {
+        close(fd);
+        fprintf(stderr, "Refused: source %zu is not a regular file readable "
+                        "by the requesting user.\n", i + 1);
+        return -1;
+    }
+    if (size) *size = (uint64_t)state.st_size;
+    return fd;
+}
+
+/* Every source is opened once before the drive is touched, so a missing or
+   unreadable file is refused while the volume is still mounted. */
+static int check_sources(CopyRequest *request, long owner_uid)
+{
+    request->sizes = calloc(request->count + 1, sizeof(*request->sizes));
+    if (!request->sizes) return -1;
     for (size_t i = 0; i < request->count; ++i) {
-        struct stat state;
-        int fd = open(request->sources[i], O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-        if (fd < 0) {
-            fprintf(stderr, "Refused: source %zu could not be opened: %s.\n",
-                    i + 1, strerror(errno));
-            return -1;
-        }
-        if (fstat(fd, &state) || !S_ISREG(state.st_mode) ||
-            (owner_uid >= 0 && state.st_uid != (uid_t)owner_uid &&
-             !(state.st_mode & S_IROTH))) {
-            if (fd >= 0) close(fd);
-            fprintf(stderr, "Refused: source %zu is not a regular file readable "
-                            "by the requesting user.\n", i + 1);
-            return -1;
-        }
-        items[i].source_fd = fd;
-        items[i].destination_name = request->names[i];
+        int fd = open_source(request, owner_uid, i, &request->sizes[i]);
+        if (fd < 0) return -1;
+        close(fd);
+    }
+    return 0;
+}
+
+static int open_sources(const CopyRequest *request, long owner_uid,
+                        OHCopyItem *items, size_t start, size_t count)
+{
+    for (size_t i = 0; i < count; ++i) items[i].source_fd = -1;
+    for (size_t i = 0; i < count; ++i) {
+        size_t index = start + i;
+        items[i].source_fd = open_source(request, owner_uid, index, NULL);
+        if (items[i].source_fd < 0) return -1;
+        items[i].destination_name = request->names[index];
+        items[i].directory = request->folders ? request->folders[index] :
+                                                request->directory;
+        items[i].replace = request->replace ? request->replace[index] :
+                                              request->replace_all;
     }
     return 0;
 }
@@ -502,6 +546,9 @@ static void explain_failure(int code, int stage, size_t index, size_t count,
         else if (code == EACCES)
             fprintf(stderr, "Refused: item %zu is a protected system entry.\n",
                     index + 1);
+        else if (code == EISDIR)
+            fprintf(stderr, "Refused: item %zu would replace a folder with a "
+                            "file.\n", index + 1);
         else if (code == ENOTSUP)
             fprintf(stderr, "Refused: item %zu is or contains a junction, symbolic "
                             "link or encrypted file; nothing changed.\n", index + 1);
@@ -550,18 +597,98 @@ static size_t request_items(const CopyRequest *request)
     return request->edit_kind ? request->edit_count : request->count;
 }
 
-static int run_engine(const CopyRequest *request, int fd, uint64_t size,
-                      int is_device, const OHCopyItem *items,
-                      ProgressFile *progress, size_t *failed, int *stage,
-                      uint32_t *warnings, size_t *removed)
+/* Large copies run as several complete sessions: an interruption touches
+   one batch only and the number of open files stays bounded. */
+enum { BATCH_FILES = 1000 };
+static const uint64_t batch_bytes = 8ULL * 1024 * 1024 * 1024;
+static size_t batch_limit = BATCH_FILES;
+
+static size_t batch_end(const CopyRequest *request, size_t start)
+{
+    size_t end = start;
+    uint64_t bytes = 0;
+    while (end < request->count && end - start < batch_limit &&
+           (end == start || bytes + request->sizes[end] <= batch_bytes))
+        bytes += request->sizes[end++];
+    return end;
+}
+
+static uint64_t batch_units(const CopyRequest *request, size_t start, size_t end)
+{
+    uint64_t bytes = 0;
+    for (size_t i = start; i < end; ++i) bytes += request->sizes[i];
+    return oh_copy_work_units(bytes, end - start,
+                              start ? 0 : request->directory_count);
+}
+
+typedef struct {
+    ProgressFile *file;
+    size_t file_base, file_total;
+    uint64_t unit_base, unit_total;
+} BatchProgress;
+
+/* Maps one batch's progress onto the whole request: one bar, one ETA. */
+static void report_batch(void *opaque, int phase, size_t index, size_t count,
+                         uint64_t done, uint64_t total)
+{
+    (void)count; (void)total;
+    BatchProgress *batch = opaque;
+    uint64_t overall = batch->unit_base + done;
+    if (overall > batch->unit_total) overall = batch->unit_total;
+    report_progress(batch->file, phase, batch->file_base + index,
+                    batch->file_total, overall, batch->unit_total);
+}
+
+static int run_engine(const CopyRequest *request, long owner_uid, int fd,
+                      uint64_t size, int is_device, ProgressFile *progress,
+                      size_t *failed, int *stage, uint32_t *warnings,
+                      size_t *removed)
 {
     if (request->edit_kind)
         return oh_edit_volume(fd, size, is_device, request->edits,
                               request->edit_count, report_progress, progress,
                               failed, stage, warnings, removed);
-    return oh_copy_new_files(fd, size, is_device, request->directory, items,
-                             request->count, report_progress, progress, failed,
-                             stage, warnings, removed);
+    OHCopyItem *items = calloc(batch_limit, sizeof(*items));
+    if (!items) return ENOMEM;
+    BatchProgress batch = { .file = progress, .file_total = request->count };
+    for (size_t start = 0, end; start < request->count || !start; start = end) {
+        end = batch_end(request, start);
+        batch.unit_total += batch_units(request, start, end);
+        if (end == start) break;
+    }
+    int code = 0;
+    size_t start = 0;
+    *removed = 0;
+    do {
+        size_t end = batch_end(request, start);
+        size_t batch_removed = 0;
+        if (open_sources(request, owner_uid, items, start, end - start)) {
+            close_sources(items, end - start);
+            *stage = 1;
+            *failed = start;
+            code = EBADF;
+            break;
+        }
+        code = oh_copy_files(fd, size, is_device,
+                             start ? NULL : (const char *const *)request->directories,
+                             start ? 0 : request->directory_count,
+                             items, end - start, report_batch, &batch,
+                             failed, stage, warnings, &batch_removed);
+        close_sources(items, end - start);
+        *removed += batch_removed;
+        if (code) {
+            *failed += start;
+            if (start)
+                fprintf(stderr, "Earlier batches: %zu file(s) were already copied "
+                                "and verified; they stay on the volume.\n", start);
+            break;
+        }
+        batch.unit_base += batch_units(request, start, end);
+        batch.file_base = end;
+        start = end;
+    } while (start < request->count);
+    free(items);
+    return code;
 }
 
 static void print_pass(const CopyRequest *request, const char *suffix)
@@ -569,37 +696,38 @@ static void print_pass(const CopyRequest *request, const char *suffix)
     if (request->edit_kind)
         printf("PASS: %zu change(s) applied, verified; volume clean%s.\n",
                request->edit_count, suffix);
+    else if (request->directory_count)
+        printf("PASS: %zu file(s) and %zu folder(s) copied, independently "
+               "verified; volume clean%s.\n", request->count,
+               request->directory_count, suffix);
     else
         printf("PASS: %zu file(s) copied, independently verified; volume clean%s.\n",
                request->count, suffix);
 }
 
-static int run_image(const CopyRequest *request)
+static int run_image(CopyRequest *request)
 {
     struct stat before, after;
     int result = 1, stage = 0;
     uint32_t warnings = 0;
     size_t failed = 0;
     const char *path = request->target;
-    OHCopyItem *items = calloc(request->count ? request->count : 1, sizeof(*items));
-    if (!items) return 1;
     if (lstat(path, &before) || !private_image(path, &before)) {
         fputs("Refused: target must be a private regular image.\n", stderr);
-        free(items);
         return 1;
     }
     int target = open(path, O_RDWR | O_EXCL | O_NOFOLLOW | O_CLOEXEC);
     if (target < 0 || fstat(target, &after) ||
         before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
         before.st_size != after.st_size ||
-        open_sources(request, -1, items)) {
+        (!request->edit_kind && check_sources(request, -1))) {
         fputs("Refused: image or source changed.\n", stderr);
         goto out;
     }
     ProgressFile progress = { .fd = open_progress(request->progress_path, -1),
                               .count = request->count, .last_phase = -1 };
     size_t removed = 0;
-    int code = run_engine(request, target, (uint64_t)after.st_size, 0, items,
+    int code = run_engine(request, -1, target, (uint64_t)after.st_size, 0,
                           &progress, &failed, &stage, &warnings, &removed);
     if (removed)
         fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
@@ -608,8 +736,6 @@ static int run_image(const CopyRequest *request)
     if (code) explain_failure(code, stage, failed, request_items(request), warnings);
     else result = 0;
 out:
-    close_sources(items, request->count);
-    free(items);
     if (target >= 0 && close(target)) {
         fputs("Image close failed; no success reported.\n", stderr);
         result = 1;
@@ -719,7 +845,7 @@ static int authopen_device(const char *path, int flags,
     return fd;
 }
 
-static int run_disk(const CopyRequest *request)
+static int run_disk(CopyRequest *request)
 {
     const char *name = request->target;
     long owner_uid = geteuid() == 0 ? request->owner_uid : (long)getuid();
@@ -734,10 +860,7 @@ static int run_disk(const CopyRequest *request)
     uint32_t warnings = 0;
     size_t failed = 0;
     int had_mount = 0, unmounted = 0, wrote = 0;
-    OHCopyItem *items = calloc(request->count ? request->count : 1, sizeof(*items));
     DiskLease lease = {0};
-    if (!items) return 1;
-    for (size_t i = 0; i < request->count; ++i) items[i].source_fd = -1;
     lease.session = DASessionCreate(kCFAllocatorDefault);
     if (!lease.session) goto out;
     DASessionScheduleWithRunLoop(lease.session, CFRunLoopGetCurrent(),
@@ -757,7 +880,7 @@ static int run_disk(const CopyRequest *request)
         fputs("Not confirmed; nothing written.\n", stderr);
         goto out;
     }
-    if (open_sources(request, owner_uid, items)) goto out;
+    if (!request->edit_kind && check_sources(request, owner_uid)) goto out;
     if (disk_unmount(lease.whole)) {
         fputs("Refused: normal unmount failed (a file on the drive may be open); "
               "no force used.\n", stderr);
@@ -882,7 +1005,7 @@ static int run_disk(const CopyRequest *request)
         .fd = open_progress(request->progress_path, owner_uid),
         .count = request->count, .last_phase = -1 };
     size_t removed = 0;
-    int code = run_engine(request, target, lease.size, 1, items, &progress,
+    int code = run_engine(request, owner_uid, target, lease.size, 1, &progress,
                           &failed, &stage, &warnings, &removed);
     if (removed)
         fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
@@ -902,8 +1025,6 @@ static int run_disk(const CopyRequest *request)
     }
     result = 0;
 out:
-    close_sources(items, request->count);
-    free(items);
     if (target >= 0 && close(target)) {
         fputs("Device close failed; no success reported.\n", stderr);
         result = 1;
@@ -1102,8 +1223,128 @@ static void usage(void)
           "                        SOURCE NAME [SOURCE NAME ...]\n"
           "       ... --image IMAGE | --disk diskXsY [options]\n"
           "           --delete PATH [PATH ...] | --rename PATH NEW_NAME |\n"
-          "           --mkdir PARENT_PATH NAME   (paths relative to the volume root)\n",
+          "           --mkdir PARENT_PATH NAME | --move DEST_FOLDER PATH [PATH ...]\n"
+          "           (paths relative to the volume root)\n"
+          "       --replace: an existing file with the same name is replaced\n"
+          "       --manifest FILE instead of SOURCE NAME pairs: NUL-separated\n"
+          "           records \"D\" FOLDER and \"F\" SOURCE FOLDER NAME 0|1(replace)\n",
           stderr);
+}
+
+/* A path relative to the volume root, NFC, without surrounding slashes. */
+static char *relative_copy(const char *value)
+{
+    while (*value == '/') ++value;
+    char *copy = normalized_copy(value);
+    if (!copy) return NULL;
+    size_t length = strlen(copy);
+    while (length && copy[length - 1] == '/') copy[--length] = 0;
+    return copy;
+}
+
+/* Reads the manifest the app writes for folder copies. Every record is
+   validated here, before any disk access. */
+static int load_manifest(CopyRequest *request, const char *path)
+{
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat state;
+    if (fd < 0 || fstat(fd, &state) || !S_ISREG(state.st_mode) ||
+        state.st_size < 2 || state.st_size > 256 * 1024 * 1024) {
+        if (fd >= 0) close(fd);
+        fputs("Refused: manifest missing or too large.\n", stderr);
+        return -1;
+    }
+    size_t size = (size_t)state.st_size;
+    char *data = malloc(size + 1);
+    size_t got = 0;
+    while (data && got < size) {
+        ssize_t n = read(fd, data + got, size - got);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    close(fd);
+    if (!data || got != size || data[size - 1]) {
+        free(data);
+        fputs("Refused: manifest unreadable or not NUL-terminated.\n", stderr);
+        return -1;
+    }
+    data[size] = 0;
+    request->manifest = data;
+    size_t files = 0, folders = 0;
+    for (char *cursor = data; cursor < data + size; ) {
+        char *kind = cursor;
+        cursor += strlen(cursor) + 1;
+        size_t fields = !strcmp(kind, "F") ? 4 : !strcmp(kind, "D") ? 1 : 0;
+        if (!fields) goto invalid;
+        for (size_t i = 0; i < fields; ++i) {
+            if (cursor >= data + size) goto invalid;
+            cursor += strlen(cursor) + 1;
+        }
+        if (fields == 4) ++files; else ++folders;
+    }
+    if (!files && !folders) goto invalid;
+    request->sources = calloc(files + 1, sizeof(*request->sources));
+    request->names = calloc(files + 1, sizeof(*request->names));
+    request->folders = calloc(files + 1, sizeof(*request->folders));
+    request->replace = calloc(files + 1, 1);
+    request->directories = calloc(folders + 1, sizeof(*request->directories));
+    if (!request->sources || !request->names || !request->folders ||
+        !request->replace || !request->directories) return -1;
+    for (char *cursor = data; cursor < data + size; ) {
+        char *kind = cursor;
+        cursor += strlen(cursor) + 1;
+        if (!strcmp(kind, "D")) {
+            char *folder = relative_copy(cursor);
+            cursor += strlen(cursor) + 1;
+            request->directories[request->directory_count++] = folder;
+            if (!folder || !*folder || !oh_ntfs_valid_directory_path(folder)) goto invalid;
+            continue;
+        }
+        size_t i = request->count++;
+        request->sources[i] = cursor;
+        cursor += strlen(cursor) + 1;
+        request->folders[i] = relative_copy(cursor);
+        cursor += strlen(cursor) + 1;
+        request->names[i] = normalized_copy(cursor);
+        cursor += strlen(cursor) + 1;
+        const char *replace = cursor;
+        cursor += strlen(cursor) + 1;
+        if (!request->folders[i] || !request->names[i] ||
+            !oh_ntfs_valid_new_name(request->names[i]) ||
+            (*request->folders[i] && !oh_ntfs_valid_directory_path(request->folders[i])) ||
+            (strcmp(replace, "0") && strcmp(replace, "1"))) {
+            fprintf(stderr, "Refused: invalid manifest entry for file %zu. "
+                            "No disk access.\n", i + 1);
+            return -1;
+        }
+        request->replace[i] = replace[0] == '1';
+    }
+    return 0;
+invalid:
+    fputs("Refused: malformed manifest. No disk access.\n", stderr);
+    return -1;
+}
+
+/* Each file of a batch stays open until the batch is published; the
+   default limit of 256 descriptors is raised as far as allowed. */
+static void raise_file_limit(void)
+{
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit)) return;
+    rlim_t wanted = limit.rlim_max < OPEN_MAX ? limit.rlim_max : OPEN_MAX;
+    if (limit.rlim_cur < wanted) {
+        limit.rlim_cur = wanted;
+        (void)setrlimit(RLIMIT_NOFILE, &limit);
+        (void)getrlimit(RLIMIT_NOFILE, &limit);
+    }
+    if (limit.rlim_cur < BATCH_FILES + 64)
+        batch_limit = limit.rlim_cur > 80 ? (size_t)limit.rlim_cur - 64 : 16;
+    #ifdef OPENHDD_TESTING
+    const char *forced = getenv("OPENHDD_TEST_BATCH_FILES");
+    if (forced && atoi(forced) > 0 && (size_t)atoi(forced) < batch_limit)
+        batch_limit = (size_t)atoi(forced);
+    #endif
 }
 
 static int parse_uid(const char *text, long *out)
@@ -1133,7 +1374,9 @@ int main(int argc, char **argv)
         return 2;
     }
     #endif
+    raise_file_limit();
     CopyRequest request = { .target = argv[2], .owner_uid = -1 };
+    const char *manifest = NULL;
     const char *sudo_uid = getenv("SUDO_UID");
     if (sudo_uid && parse_uid(sudo_uid, &request.owner_uid)) request.owner_uid = -1;
     int index = 3;
@@ -1141,6 +1384,9 @@ int main(int argc, char **argv)
         const char *option = argv[index];
         if (!strcmp(option, "--yes") && disk) request.assume_confirmed = 1;
         else if (!strcmp(option, "--eject") && disk) request.eject = 1;
+        else if (!strcmp(option, "--replace")) request.replace_all = 1;
+        else if (!strcmp(option, "--manifest") && index + 1 < argc && !manifest)
+            manifest = argv[++index];
         else if (!strcmp(option, "--dir") && index + 1 < argc && !request.directory) {
             request.directory = normalized_copy(argv[++index]);
             if (!request.directory) { usage(); return 2; }
@@ -1151,33 +1397,50 @@ int main(int argc, char **argv)
         } else if (!strcmp(option, "--delete")) { request.edit_kind = OH_EDIT_DELETE; ++index; break; }
         else if (!strcmp(option, "--rename")) { request.edit_kind = OH_EDIT_RENAME; ++index; break; }
         else if (!strcmp(option, "--mkdir")) { request.edit_kind = OH_EDIT_MKDIR; ++index; break; }
+        else if (!strcmp(option, "--move")) { request.edit_kind = OH_EDIT_MOVE; ++index; break; }
         else { usage(); request_free(&request); return 2; }
     }
     int remaining = argc - index;
     if (request.edit_kind) {
-        size_t wanted = request.edit_kind == OH_EDIT_DELETE ? 0 : 2;
-        if (remaining < 1 || (wanted && remaining != (int)wanted)) {
+        int kind = request.edit_kind;
+        size_t wanted = kind == OH_EDIT_DELETE || kind == OH_EDIT_MOVE ? 0 : 2;
+        if (remaining < (kind == OH_EDIT_MOVE ? 2 : 1) ||
+            (wanted && remaining != (int)wanted) || manifest || request.replace_all) {
             usage(); request_free(&request); return 2;
         }
-        request.edit_count = request.edit_kind == OH_EDIT_DELETE ? (size_t)remaining : 1;
+        request.edit_count = kind == OH_EDIT_DELETE ? (size_t)remaining :
+                             kind == OH_EDIT_MOVE ? (size_t)remaining - 1 : 1;
         request.edits = calloc(request.edit_count, sizeof(*request.edits));
         request.edit_strings = calloc((size_t)remaining, sizeof(char *));
         if (!request.edits || !request.edit_strings) { request_free(&request); return 1; }
         for (int i = 0; i < remaining; ++i) {
-            const char *value = argv[index + i];
-            while (*value == '/') ++value;   /* paths are relative to the root */
-            char *copy = normalized_copy(value);
+            /* paths are relative to the root */
+            char *copy = relative_copy(argv[index + i]);
             if (!copy) { request_free(&request); return 2; }
-            size_t length = strlen(copy);
-            while (length && copy[length - 1] == '/') copy[--length] = 0;
             request.edit_strings[request.edit_string_count++] = copy;
         }
         for (size_t i = 0; i < request.edit_count; ++i) {
-            request.edits[i].kind = request.edit_kind;
-            request.edits[i].path = request.edit_strings[request.edit_kind == OH_EDIT_DELETE ? i : 0];
-            request.edits[i].name = request.edit_kind == OH_EDIT_DELETE ? NULL : request.edit_strings[1];
+            request.edits[i].kind = kind;
+            if (kind == OH_EDIT_DELETE) {
+                request.edits[i].path = request.edit_strings[i];
+            } else if (kind == OH_EDIT_MOVE) {
+                request.edits[i].path = request.edit_strings[i + 1];
+                request.edits[i].name = request.edit_strings[0];
+            } else {
+                request.edits[i].path = request.edit_strings[0];
+                request.edits[i].name = request.edit_strings[1];
+            }
         }
         int result = disk ? run_disk(&request) : run_image(&request);
+        request_free(&request);
+        return result;
+    }
+    if (manifest) {
+        if (remaining || request.directory || request.replace_all) {
+            usage(); request_free(&request); return 2;
+        }
+        int result = load_manifest(&request, manifest) ? 2 :
+            disk ? run_disk(&request) : run_image(&request);
         request_free(&request);
         return result;
     }

@@ -3,18 +3,207 @@ import AppKit
 import Darwin
 import Foundation
 
+/// One file of a copy: where it comes from and where it goes on the volume.
+struct CopyEntry {
+    let source: URL
+    /// Folder on the volume, relative to its root; "" for the root.
+    let folder: String
+    let name: String
+    let size: UInt64
+    var replace = false
+
+    var path: String { folder.isEmpty ? name : folder + "/" + name }
+}
+
 /// What the user asked to copy onto one NTFS partition.
 struct CopyPlan {
     let partition: String
     let volumeName: String
-    let sources: [URL]
-    let names: [String]
-    let sizes: [UInt64]
-    /// Existing folder on the volume, relative to its root, or nil for the root.
-    let directory: String?
+    var entries: [CopyEntry]
+    /// Folders to create (or merge with existing ones), parents first.
+    var folders: [String]
+    /// Existing folder chosen as destination, relative to the root; "" for the root.
+    let destination: String
 
-    var totalBytes: UInt64 { sizes.reduce(0, +) }
-    var destinationLabel: String { directory.map { "cartella «\($0)»" } ?? "cartella principale" }
+    var totalBytes: UInt64 { entries.reduce(0) { $0 + $1.size } }
+    var replacedCount: Int { entries.filter(\.replace).count }
+    var destinationLabel: String { destination.isEmpty ? "cartella principale" : "cartella «\(destination)»" }
+    /// Names shown while copying, relative to the destination.
+    var names: [String] {
+        entries.map { entry in
+            destination.isEmpty ? entry.path : String(entry.path.dropFirst(destination.count + 1))
+        }
+    }
+
+    /// The tool's manifest: NUL-separated "D" folder and "F" source, folder,
+    /// name, replace records. Written 0600 in the user's temporary folder.
+    func writeManifest() -> URL? {
+        var data = Data()
+        func add(_ fields: String...) {
+            for field in fields { data.append(contentsOf: Array(field.utf8)); data.append(0) }
+        }
+        for folder in folders { add("D", folder) }
+        for entry in entries { add("F", entry.source.path, entry.folder, entry.name, entry.replace ? "1" : "0") }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openhdd-manifest-\(UUID().uuidString)")
+        return FileManager.default.createFile(atPath: url.path, contents: data,
+                                              attributes: [.posixPermissions: 0o600]) ? url : nil
+    }
+}
+
+/// URLs collected from drop callbacks, which arrive on background queues.
+final class DroppedURLs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+
+    func append(_ url: URL) {
+        lock.lock()
+        urls.append(url)
+        lock.unlock()
+    }
+
+    var all: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return urls
+    }
+}
+
+/// What a walk through the chosen files and folders found.
+struct CopyScan {
+    var entries: [CopyEntry] = []
+    var folders: [String] = []
+    var problems: [String] = []
+    /// Symbolic links and special files, which are not copied.
+    var skipped: [String] = []
+    /// Indexes of entries whose name already exists as a file on the volume.
+    var existing: [Int] = []
+}
+
+enum CopyScanner {
+    /// Finder bookkeeping that means nothing on Windows.
+    static func ignored(_ name: String) -> Bool {
+        name == ".DS_Store" || name == ".localized" || name.hasPrefix("._")
+    }
+
+    private static func join(_ folder: String, _ name: String) -> String {
+        folder.isEmpty ? name : name.isEmpty ? folder : folder + "/" + name
+    }
+
+    private static func fold(_ name: String) -> String {
+        name.folding(options: .caseInsensitive, locale: nil)
+    }
+
+    /// Walks the sources (files and whole folders) without following
+    /// symbolic links, and maps them into `destination` on the volume.
+    static func scan(_ sources: [URL], into destination: String) -> CopyScan {
+        var scan = CopyScan()
+        var names: [String: Set<String>] = [:]
+        func claim(_ folder: String, _ name: String) -> Bool {
+            if names[folder, default: []].insert(fold(name)).inserted { return true }
+            scan.problems.append("«\(join(folder, name))»: nome già usato nella stessa cartella (Windows non distingue maiuscole e minuscole)")
+            return false
+        }
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey]
+        for url in sources {
+            let name = NTFSCopyRunner.normalized(url.lastPathComponent)
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            if values?.isSymbolicLink == true { scan.skipped.append(name); continue }
+            if let problem = NTFSCopyRunner.problem(withName: name) {
+                scan.problems.append("«\(name)»: \(problem)")
+                continue
+            }
+            if values?.isRegularFile == true {
+                if claim(destination, name) {
+                    scan.entries.append(CopyEntry(source: url, folder: destination, name: name,
+                                                  size: UInt64(values?.fileSize ?? 0)))
+                }
+                continue
+            }
+            guard values?.isDirectory == true else { scan.skipped.append(name); continue }
+            guard claim(destination, name) else { continue }
+            let top = join(destination, name)
+            scan.folders.append(top)
+            var unreadable: [String] = []
+            guard let walker = FileManager.default.enumerator(
+                at: url, includingPropertiesForKeys: keys, options: [],
+                errorHandler: { failed, _ in unreadable.append(failed.lastPathComponent); return true })
+            else { scan.problems.append("«\(name)»: cartella non leggibile"); continue }
+            let rootPath = url.path
+            for case let fileURL as URL in walker {
+                let relative = String(fileURL.path.dropFirst(rootPath.count))
+                    .split(separator: "/").map { NTFSCopyRunner.normalized(String($0)) }
+                guard let leaf = relative.last else { continue }
+                let folder = join(top, relative.dropLast().joined(separator: "/"))
+                let shown = join(name, relative.joined(separator: "/"))
+                let info = try? fileURL.resourceValues(forKeys: Set(keys))
+                let isDirectory = info?.isDirectory == true && info?.isSymbolicLink != true
+                if ignored(leaf) { if isDirectory { walker.skipDescendants() }; continue }
+                if info?.isSymbolicLink == true { scan.skipped.append(shown); continue }
+                if let problem = NTFSCopyRunner.problem(withName: leaf) {
+                    scan.problems.append("«\(shown)»: \(problem)")
+                    if isDirectory { walker.skipDescendants() }
+                    continue
+                }
+                if isDirectory {
+                    if claim(folder, leaf) { scan.folders.append(join(folder, leaf)) }
+                    else { walker.skipDescendants() }
+                } else if info?.isRegularFile == true {
+                    if claim(folder, leaf) {
+                        scan.entries.append(CopyEntry(source: fileURL, folder: folder, name: leaf,
+                                                      size: UInt64(info?.fileSize ?? 0)))
+                    }
+                } else {
+                    scan.skipped.append(shown)
+                }
+            }
+            scan.problems += unreadable.map { "«\($0)»: non leggibile" }
+        }
+        return scan
+    }
+
+    private struct Existing {
+        let name: String
+        let isDirectory: Bool
+    }
+
+    /// Compares the plan with the read-only mounted volume. An existing file
+    /// with the same name can be replaced; an existing folder, or a name
+    /// that differs only in letter case, cannot.
+    static func compare(_ scan: inout CopyScan, mount: URL) {
+        var listings: [String: [String: Existing]] = [:]
+        func listing(_ folder: String) -> [String: Existing] {
+            if let cached = listings[folder] { return cached }
+            let url = folder.isEmpty ? mount : mount.appendingPathComponent(folder)
+            var map: [String: Existing] = [:]
+            let items = (try? FileManager.default.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [])) ?? []
+            for item in items {
+                let name = NTFSCopyRunner.normalized(item.lastPathComponent)
+                let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                map[fold(name)] = Existing(name: name, isDirectory: isDirectory)
+            }
+            listings[folder] = map
+            return map
+        }
+        for folder in scan.folders {
+            var parts = folder.split(separator: "/").map(String.init)
+            guard let leaf = parts.popLast() else { continue }
+            if let found = listing(parts.joined(separator: "/"))[fold(leaf)], !found.isDirectory {
+                scan.problems.append("«\(folder)»: sul disco esiste già un file con questo nome")
+            }
+        }
+        for (index, entry) in scan.entries.enumerated() {
+            guard let found = listing(entry.folder)[fold(entry.name)] else { continue }
+            if found.isDirectory {
+                scan.problems.append("«\(entry.path)»: sul disco esiste una cartella con lo stesso nome")
+            } else if found.name != entry.name {
+                scan.problems.append("«\(entry.path)»: sul disco esiste già come «\(found.name)» (maiuscole diverse); rinominalo o eliminalo prima")
+            } else {
+                scan.existing.append(index)
+            }
+        }
+    }
 }
 
 extension String {
@@ -86,6 +275,7 @@ struct EditRequest {
         case delete([String])
         case rename(String, to: String)
         case newFolder(in: String, named: String)
+        case move([String], to: String)
     }
 
     let partition: String
@@ -97,6 +287,7 @@ struct EditRequest {
         case .delete(let paths): return ["--delete"] + paths
         case .rename(let path, let name): return ["--rename", path, name]
         case .newFolder(let parent, let name): return ["--mkdir", parent, name]
+        case .move(let paths, let destination): return ["--move", destination] + paths
         }
     }
 
@@ -105,6 +296,7 @@ struct EditRequest {
         case .delete: return "Eliminazione su «\(volumeName)»"
         case .rename: return "Rinomina su «\(volumeName)»"
         case .newFolder: return "Nuova cartella su «\(volumeName)»"
+        case .move: return "Spostamento su «\(volumeName)»"
         }
     }
 
@@ -117,6 +309,9 @@ struct EditRequest {
             return "«\(old)» rinominato in «\(name)» e verificato. Il disco è di nuovo in sola lettura."
         case .newFolder(_, let name):
             return "Cartella «\(name)» creata e verificata. Il disco è di nuovo in sola lettura."
+        case .move(let paths, let destination):
+            let target = destination.isEmpty ? "cartella principale" : "«\(destination)»"
+            return "Spostamento completato e verificato: \(paths.count) elemento/i in \(target). Il disco è di nuovo in sola lettura."
         }
     }
 }
@@ -166,12 +361,11 @@ enum NTFSCopyRunner {
     }
 
     static func run(_ plan: CopyPlan, progressFile: URL) -> CopyOutcome {
-        var arguments: [String] = []
-        if let directory = plan.directory { arguments += ["--dir", directory] }
-        for (source, name) in zip(plan.sources, plan.names) {
-            arguments += [source.path, name]
+        guard let manifest = plan.writeManifest() else {
+            return .failure("Impossibile preparare l'elenco dei file da copiare.", needsWindowsCheck: false)
         }
-        return execute(partition: plan.partition, arguments: arguments,
+        defer { try? FileManager.default.removeItem(at: manifest) }
+        return execute(partition: plan.partition, arguments: ["--manifest", manifest.path],
                        progressFile: progressFile) { summary(of: $0, plan: plan) }
     }
 
@@ -219,7 +413,10 @@ enum NTFSCopyRunner {
     }
 
     private static func summary(of text: String, plan: CopyPlan) -> String {
-        var message = "Copia completata e verificata: \(plan.names.count) file in \(plan.destinationLabel). " +
+        var what = "\(plan.entries.count) file"
+        if !plan.folders.isEmpty { what += " e \(plan.folders.count) cartelle" }
+        if plan.replacedCount > 0 { what += " (\(plan.replacedCount) sostituiti)" }
+        var message = "Copia completata e verificata: \(what) in \(plan.destinationLabel). " +
             "Il disco è di nuovo in sola lettura."
         if text.contains("Removed ") {
             message += " Rimossi anche i file temporanei di una copia interrotta in precedenza."
@@ -253,8 +450,18 @@ enum NTFSCopyRunner {
             ("not a regular file readable", "Uno dei file di origine non è leggibile."),
             ("could not be opened", "Uno dei file di origine non si può aprire."),
             ("changed while it was being copied", "Uno dei file di origine è stato modificato durante la copia: nessun file è stato pubblicato."),
+            ("replace a folder with a file", "Un file non può sostituire una cartella con lo stesso nome."),
+            ("differs in letter case", "Sul disco esiste già un file con lo stesso nome ma maiuscole diverse: rinominalo o eliminalo prima."),
+            ("moved into itself", "Una cartella non può essere spostata dentro se stessa."),
+            ("already in that folder", "L'elemento si trova già in quella cartella."),
+            ("overlap", "Tra gli elementi da spostare ce n'è uno contenuto in un altro: spostali separatamente."),
+            ("malformed manifest", "Elenco dei file da copiare non valido."),
         ]
         var message = rules.first(where: { text.contains($0.0) })?.1 ?? "Operazione non riuscita."
+        if let range = text.range(of: "Earlier batches: ") {
+            let count = text[range.upperBound...].prefix(while: \.isNumber)
+            message += " I primi \(count) file erano già stati copiati e verificati: restano sul disco."
+        }
         if text.contains("marked for checking") {
             message += " L'operazione si è interrotta dopo l'inizio della scrittura: i file non coinvolti non sono stati toccati, ma il disco va controllato su Windows con «chkdsk X: /f» prima di scriverci di nuovo."
         }

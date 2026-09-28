@@ -2,8 +2,8 @@
 
 **OpenHDD Local** è l'app gratuita, senza abbonamento Apple Developer, per dischi
 NTFS esterni su Mac Apple Silicon (macOS 15.4 o successivo). Legge NTFS con il
-driver di macOS, in sola lettura, e **copia file nuovi sul disco NTFS** con
-verifica completa. Per APFS/exFAT/FAT/HFS usa macOS.
+driver di macOS, in sola lettura, e **copia file e cartelle sul disco NTFS**
+con verifica completa; crea, rinomina, sposta ed elimina elementi del disco. Per APFS/exFAT/FAT/HFS usa macOS.
 
 ```sh
 Scripts/build-local-app.sh
@@ -13,8 +13,12 @@ open Build/OpenHDDLocal.app
 ## Copiare file su un disco NTFS
 
 1. Collega il disco e selezionalo nell'elenco.
-2. Premi **Copia sul disco…**, scegli uno o più file e la destinazione: la
-   cartella principale o una cartella esistente del disco.
+2. Premi **Copia sul disco…** e scegli file o cartelle intere, oppure
+   **trascinali dal Finder** sulla riga del disco. Poi scegli la destinazione:
+   la cartella principale o una cartella esistente del disco. Le cartelle
+   vengono copiate con tutte le sottocartelle; `.DS_Store` e i file `._*` del
+   Mac vengono saltati, i link simbolici non vengono seguiti né copiati.
+   Se un file esiste già, l'app chiede se **sostituirlo** o **saltarlo**.
 3. Conferma. Per una chiavetta o un disco USB macOS chiede la password di
    amministratore con il pannello di sistema di `authopen`: l'autorizzazione
    vale solo per aprire quella partizione, il resto della copia gira con i
@@ -28,9 +32,12 @@ open Build/OpenHDDLocal.app
 
 Cosa garantisce la copia ([piano v1](docs/piano-scrittura-v1.md)):
 
-- **Aggiunge solo file nuovi.** Non sovrascrive, non cancella e non rinomina
-  file esistenti. Un nome già presente viene rifiutato, senza distinguere
-  maiuscole e minuscole, come fa Windows. Anche i nomi che Windows non accetta
+- **Tocca solo quello che hai scelto.** Aggiunge file e cartelle nuovi; una
+  cartella con lo stesso nome di una esistente viene unita a quella. Un file
+  già presente viene sostituito solo se lo chiedi, e solo dopo che il nuovo è
+  stato scritto e verificato: fino a quel momento il vecchio resta al suo
+  posto. Non si sostituisce una cartella con un file, né un file il cui nome
+  differisce solo per le maiuscole. I nomi che Windows non accetta
   (`: * ? " < > |`, `CON`, punto finale…) vengono rifiutati prima di scrivere.
 - **Nessun falso successo.** Il successo compare solo dopo la sincronizzazione
   del disco e la rilettura di ogni file con confronto SHA-256.
@@ -40,7 +47,15 @@ Cosa garantisce la copia ([piano v1](docs/piano-scrittura-v1.md)):
   durante la copia, OpenHDD rifiuta nuove scritture su quel disco. Windows lo
   segnala come da controllare, e `chkdsk X: /f` lo riporta coerente. I file già
   presenti restano intatti; si perde al massimo il file in copia. Alla copia
-  successiva OpenHDD rimuove da solo i propri file temporanei rimasti.
+  successiva OpenHDD rimuove da solo i propri file temporanei rimasti e
+  conclude le sostituzioni interrotte usando il proprio diario
+  (`.OpenHDD-journal`): sotto il nome resta il file vecchio o quello nuovo,
+  mai nessuno dei due. Fino ad allora un file sostituito può comparire su
+  Windows come `.OpenHDD-old-…`: non cancellarlo a mano.
+- **Copie grandi a lotti.** Migliaia di file vengono copiati in lotti (al
+  massimo 1000 file o 8 GB), ognuno completo e verificato; la barra resta una
+  sola per l'intera copia. Se qualcosa va storto in un lotto, quelli
+  precedenti restano sul disco, verificati.
 - **Niente scrittura su volumi a rischio.** Dischi con Windows in
   ibernazione/Avvio rapido, journal non pulito o già da controllare vengono
   rifiutati con il motivo.
@@ -62,13 +77,19 @@ volume venga rimontato durante la copia. I file di un lotto vengono prima
 scritti tutti, poi riletti una sola volta dal disco, poi pubblicati: i
 montaggi NTFS sono pochi e costanti anche con migliaia di foto.
 
-## Modificare il disco: nuova cartella, rinomina, elimina (v2)
+## Modificare il disco: nuova cartella, rinomina, sposta, elimina
 
 Dal menu **Modifica** dell'app:
 
 - **Nuova cartella…**: scegli dove, poi il nome.
 - **Rinomina…**: un file o una cartella, nella stessa cartella; si può anche
   cambiare solo maiuscole e minuscole.
+- **Sposta…**: uno o più file e cartelle in un'altra cartella dello stesso
+  disco. È immediato: i dati non vengono ricopiati. Una cartella non può
+  finire dentro se stessa, e il nome non deve esistere già nella
+  destinazione. Se lo spostamento si interrompe, dopo `chkdsk` un elemento
+  può comparire in entrambe le cartelle: il contenuto è lo stesso, basta
+  eliminare il nome in più.
 - **Elimina…**: file e cartelle, queste con tutto il contenuto. Sul disco NTFS
   non c'è un Cestino: l'app chiede conferma e l'operazione non si annulla.
 
@@ -82,10 +103,11 @@ senza cambiare nulla. Da riga di comando:
 sudo Build/OpenHDDCopy --disk disk4s1 --mkdir "Foto" "Estate 2026"
 sudo Build/OpenHDDCopy --disk disk4s1 --rename "Foto/Estate 2026" "Estate 2026 mare"
 sudo Build/OpenHDDCopy --disk disk4s1 --delete "vecchio.bin" "Cartella da togliere"
+sudo Build/OpenHDDCopy --disk disk4s1 --move "Archivio" "Foto/Estate 2026" "note.txt"
 ```
 
-Fuori da queste versioni: sovrascrivere file esistenti, spostare tra
-cartelle, scrivere dal Finder, file compressi o cifrati.
+Fuori da queste versioni: scrivere dal Finder, modificare file sul posto,
+file compressi o cifrati NTFS.
 
 ### Da riga di comando
 
@@ -93,7 +115,8 @@ Il motore dell'app è `Build/OpenHDDCopy` (anche in
 `OpenHDDLocal.app/Contents/Resources/`):
 
 ```sh
-sudo Build/OpenHDDCopy --disk disk4s1 [--dir "Cartella/Sotto"] FILE1 "Nome 1" FILE2 "Nome 2"
+sudo Build/OpenHDDCopy --disk disk4s1 [--dir "Cartella/Sotto"] [--replace] FILE1 "Nome 1" FILE2 "Nome 2"
+sudo Build/OpenHDDCopy --disk disk4s1 --manifest ELENCO   # cartelle intere (formato in --help)
 sudo Build/OpenHDDCopy --check-disk disk4s1        # controllo in sola lettura
 ```
 

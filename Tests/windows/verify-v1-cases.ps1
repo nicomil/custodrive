@@ -30,11 +30,17 @@ param(
     [string] $CaseDirectory,
     [Parameter(Mandatory = $true)]
     [string] $ArtifactDirectory,
-    [string[]] $Only = @()
+    [string[]] $Only = @(),
+    # Cases whose repaired working copy is kept as repaired.vhd, so the Mac
+    # can run its own recovery on exactly what Windows left.
+    [string[]] $KeepRepaired = @()
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
+# With -File a list arrives as one comma-separated string.
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$KeepRepaired = @($KeepRepaired | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 
 if (Test-Path -LiteralPath $ArtifactDirectory) {
     if (@(Get-ChildItem -LiteralPath $ArtifactDirectory -Force).Count -gt 0) { throw 'REFUSED: artifact directory must be new or empty' }
@@ -131,6 +137,19 @@ foreach ($case in $cases) {
         $r.new_files = @()
         foreach ($spec in ($case.new_files -split ';')) {
             if (-not $spec) { continue }
+            if ($spec.StartsWith('found:')) {
+                # Content that must still exist somewhere on the volume:
+                # "found:H|SIZE" or alternatives "found:H1|S1|H2|S2" (old or new).
+                $wanted = $spec.Substring(6).Split('|')
+                $found = $null
+                for ($k = 0; $k + 1 -lt $wanted.Count -and -not $found; $k += 2) {
+                    $found = Find-ByHash $rootPath $wanted[$k] ([long]$wanted[$k + 1])
+                }
+                $state = $(if ($found) { 'found:' + $found.FullName.Substring(3) } else { 'LOST' })
+                if (-not $found) { $r.problems += "content $($spec.Substring(6)) lost" }
+                $r.new_files += [ordered]@{ path = $spec; state = $state; optional = $false }
+                continue
+            }
             if ($spec.StartsWith('absent:') -or $spec.StartsWith('dir:')) {
                 # Edits: an entry that must be gone, or a folder that must exist.
                 $rel = $spec.Substring($spec.IndexOf(':') + 1)
@@ -151,7 +170,8 @@ foreach ($case in $cases) {
             $state = 'absent'
             if (Test-Path -LiteralPath $path -PathType Leaf) {
                 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-                $state = $(if ($hash -eq 'any' -or $actual -eq $hash) { 'ok' } else { 'WRONG_CONTENT' })
+                # "h1,h2": either content is acceptable (old or new file).
+                $state = $(if ($hash -eq 'any' -or ($hash -split ',') -contains $actual) { 'ok' } else { 'WRONG_CONTENT' })
             }
             if ($state -eq 'WRONG_CONTENT' -or (-not $optional -and $state -ne 'ok')) { $r.problems += "new file $rel is $state" }
             $r.new_files += [ordered]@{ path = $rel; state = $state; optional = $optional }
@@ -166,6 +186,9 @@ foreach ($case in $cases) {
     }
     finally {
         if ($mounted) { try { Dismount-DiskImage -ImagePath $work -ErrorAction Stop | Out-Null } catch { $r.problems += 'dismount: ' + $_.Exception.Message } }
+        if ($KeepRepaired -contains $case.case -and (Test-Path -LiteralPath $work)) {
+            Copy-Item -LiteralPath $work -Destination (Join-Path $dir 'repaired.vhd')
+        }
         try {
             $r.events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $start.AddSeconds(-1) } -ErrorAction Stop |
                 Where-Object { $_.ProviderName -match 'Ntfs|Chkdsk' } |

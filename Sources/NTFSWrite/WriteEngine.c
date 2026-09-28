@@ -28,9 +28,14 @@
 /* Large sequential I/O is what keeps USB and SSD transfers fast; the
    kernel splits it at the device's maximum transfer size. */
 enum { IO_CHUNK = 4 * 1024 * 1024, MAX_ITEMS = 4096, PENDING_LENGTH = 49,
-       UNIT_OVERHEAD = 1024 * 1024 };
+       UNIT_OVERHEAD = 1024 * 1024, MAX_DIRECTORIES = 100000,
+       MAX_PENDING = 100000, MAX_JOURNAL = 16 * 1024 * 1024 };
 
 static const char pending_prefix[] = ".OpenHDD-pending-";
+/* A replaced file keeps this name, in its own folder, until the new file
+   is published; the journal in the root says where each one is. */
+static const char old_prefix[] = ".OpenHDD-old-";
+static const char journal_name[] = ".OpenHDD-journal";
 
 /* Last low-level failure, for the diagnostic line of the caller. */
 static char last_error[256];
@@ -529,7 +534,8 @@ static int check_pending_entry(void *opaque, const char *name,
                                const OHNTFSItem *item)
 {
     (void)opaque; (void)item;
-    if (!strncmp(name, pending_prefix, sizeof(pending_prefix) - 1))
+    if (!strncmp(name, pending_prefix, sizeof(pending_prefix) - 1) ||
+        !strcmp(name, journal_name))
         return EINPROGRESS;
     return 0;
 }
@@ -562,31 +568,6 @@ int oh_ntfs_safety_preflight(int target_fd, uint64_t target_size,
     if (!target.align) return EIO;
     ntfs_log_set_handler(ntfs_log_handler_null);
     return volume_scan(&target, free_bytes, warnings);
-}
-
-static int resolve_directory(Target *target, const char *path, uint64_t *inode)
-{
-    OHNTFSVolume *volume = NULL;
-    uint32_t warnings = 0;
-    int status = readonly_open(target, &volume, &warnings);
-    if (status) return status;
-    status = warnings ? EBUSY : oh_ntfs_resolve_directory(volume, path, inode);
-    oh_ntfs_close(volume);
-    return target->io_failed ? EIO : status;
-}
-
-static int name_is_free(Target *target, uint64_t directory, const char *name)
-{
-    OHNTFSVolume *volume = NULL;
-    uint32_t warnings = 0;
-    int exists = 0;
-    int status = readonly_open(target, &volume, &warnings);
-    if (status) return status;
-    status = warnings ? EBUSY :
-        oh_ntfs_name_exists_nocase(volume, directory, name, &exists);
-    oh_ntfs_close(volume);
-    if (target->io_failed) return EIO;
-    return status ? status : exists ? EEXIST : 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -715,7 +696,7 @@ static int same_name_ignoring_case(const char *a, const char *b)
                                                   kCFStringEncodingUTF8);
     int same = 1; /* fail closed if either string cannot be built */
     if (left && right)
-        same = CFStringCompare(left, right, kCFCompareCaseInsensitive) ==
+        same = CFStringCompare(left, right, kCFCompareCaseInsensitive | kCFCompareNonliteral) ==
             kCFCompareEqualTo;
     if (left) CFRelease(left);
     if (right) CFRelease(right);
@@ -814,9 +795,13 @@ static void work_advance(Work *work, int phase, size_t index, uint64_t units)
 
 typedef struct {
     char pending[PENDING_LENGTH + 1];
+    char old[PENDING_LENGTH + 1];     /* replaced file's temporary name */
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     uint64_t size;
     uint64_t inode;
+    uint64_t directory_inode;         /* 0 until a new folder exists */
+    uint64_t old_inode;
+    int replacing;                    /* an existing file is swapped out */
 } Staged;
 
 static int phase_error(Target *target)
@@ -825,17 +810,24 @@ static int phase_error(Target *target)
     return target->io_failed ? EIO : (errno ? errno : EIO);
 }
 
-static void make_pending_name(char pending[PENDING_LENGTH + 1])
+/* prefix + 32 random hex digits; the buffer holds PENDING_LENGTH + 1. */
+static void make_temporary_name(char name[PENDING_LENGTH + 1], const char *prefix)
 {
     unsigned char random_bytes[16];
     static const char hex[] = "0123456789abcdef";
+    size_t length = strlen(prefix);
     arc4random_buf(random_bytes, sizeof(random_bytes));
-    memcpy(pending, pending_prefix, sizeof(pending_prefix) - 1);
+    memcpy(name, prefix, length);
     for (size_t i = 0; i < sizeof(random_bytes); ++i) {
-        pending[17 + i * 2] = hex[random_bytes[i] >> 4];
-        pending[18 + i * 2] = hex[random_bytes[i] & 15];
+        name[length + i * 2] = hex[random_bytes[i] >> 4];
+        name[length + i * 2 + 1] = hex[random_bytes[i] & 15];
     }
-    pending[PENDING_LENGTH] = 0;
+    name[length + 32] = 0;
+}
+
+static void make_pending_name(char pending[PENDING_LENGTH + 1])
+{
+    make_temporary_name(pending, pending_prefix);
 }
 
 static ntfs_inode *open_directory(ntfs_volume *volume, const char *path)
@@ -848,6 +840,104 @@ static ntfs_inode *open_directory(ntfs_volume *volume, const char *path)
         return NULL;
     }
     return directory;
+}
+
+static int split_path(const char *path, char *parent, size_t parent_size,
+                      const char **leaf);
+static int protected_path(const char *path);
+static int unlink_name(ntfs_volume *volume, const char *parent_path,
+                       const char *name);
+static int rename_entry(ntfs_volume *volume, const char *parent_path,
+                        const char *old_name, const char *new_name);
+static int make_directory(ntfs_volume *volume, const char *parent_path,
+                          const char *name);
+
+static const char *item_directory(const OHCopyItem *item)
+{
+    return item->directory ? item->directory : "";
+}
+
+/* Case-folded copy of a name, for comparisons the way Windows sees them. */
+static char *fold_key(const char *value)
+{
+    CFStringRef string = CFStringCreateWithCString(kCFAllocatorDefault, value,
+                                                   kCFStringEncodingUTF8);
+    if (!string) return NULL;
+    CFMutableStringRef folded = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, string);
+    CFRelease(string);
+    if (!folded) return NULL;
+    CFStringFold(folded, kCFCompareCaseInsensitive, NULL);
+    CFIndex capacity = CFStringGetMaximumSizeForEncoding(
+        CFStringGetLength(folded), kCFStringEncodingUTF8) + 1;
+    char *out = malloc((size_t)capacity);
+    if (out && !CFStringGetCString(folded, out, capacity, kCFStringEncodingUTF8)) {
+        free(out);
+        out = NULL;
+    }
+    CFRelease(folded);
+    return out;
+}
+
+/* Like oh_ntfs_resolve_directory, but never through a junction or link. */
+static int resolve_plain_directory(OHNTFSVolume *volume, const char *path,
+                                   uint64_t *inode)
+{
+    uint64_t current = FILE_root;
+    char *copy = strdup(path ? path : "");
+    if (!copy) return ENOMEM;
+    int error = 0;
+    char *cursor = copy, *component;
+    while (!error && (component = strsep(&cursor, "/"))) {
+        if (!*component) continue;
+        OHNTFSItem item;
+        error = oh_ntfs_lookup(volume, current, component, &item);
+        if (!error && item.special) error = ENOTSUP;
+        if (!error && item.kind != 2) error = ENOTDIR;
+        if (!error) current = item.inode;
+    }
+    free(copy);
+    if (!error) *inode = current;
+    return error;
+}
+
+typedef struct {
+    const char *name;
+    int found;
+    OHNTFSItem item;
+} ExactName;
+
+/* Same name, letter case included. Listings on macOS may come back
+   decomposed (NFD) while requested names are NFC, so both are compared in
+   canonical form. */
+static int same_name_exactly(const char *a, const char *b)
+{
+    if (!strcmp(a, b)) return 1;
+    CFStringRef left = CFStringCreateWithCString(kCFAllocatorDefault, a,
+                                                 kCFStringEncodingUTF8);
+    CFStringRef right = CFStringCreateWithCString(kCFAllocatorDefault, b,
+                                                  kCFStringEncodingUTF8);
+    CFMutableStringRef l = left ? CFStringCreateMutableCopy(kCFAllocatorDefault, 0, left) : NULL;
+    CFMutableStringRef r = right ? CFStringCreateMutableCopy(kCFAllocatorDefault, 0, right) : NULL;
+    int same = 0;
+    if (l && r) {
+        CFStringNormalize(l, kCFStringNormalizationFormC);
+        CFStringNormalize(r, kCFStringNormalizationFormC);
+        same = CFStringCompare(l, r, 0) == kCFCompareEqualTo;
+    }
+    if (l) CFRelease(l);
+    if (r) CFRelease(r);
+    if (left) CFRelease(left);
+    if (right) CFRelease(right);
+    return same;
+}
+
+static int find_exact_name(void *opaque, const char *name, const OHNTFSItem *item)
+{
+    ExactName *probe = opaque;
+    if (!same_name_exactly(name, probe->name)) return 0;
+    probe->found = 1;
+    probe->item = *item;
+    return 0;
 }
 
 /* Content changes move the modification time. The status-change time is
@@ -951,26 +1041,56 @@ static int write_all(Target *target, const OHCopyItem *items,
     return result;
 }
 
+/* Resolves each item's folder once folders exist; consecutive items usually
+   share a folder, so the last answer is kept. */
+typedef struct {
+    const char *path;
+    uint64_t inode;
+} FolderCache;
+
+static int item_folder(OHNTFSVolume *volume, FolderCache *cache,
+                       const OHCopyItem *item, uint64_t *inode)
+{
+    const char *path = item_directory(item);
+    if (cache->path && !strcmp(cache->path, path)) { *inode = cache->inode; return 0; }
+    int status = resolve_plain_directory(volume, path, inode);
+    if (!status) { cache->path = path; cache->inode = *inode; }
+    return status;
+}
+
 /* Stage 3: the only full read-back. On a raw device it comes from the
-   drive, not from a cache. Final names are re-checked in the same view. */
-static int verify_all(Target *target, const OHCopyItem *items,
-                      uint64_t directory_inode, Staged *staged, size_t count,
-                      unsigned char *buffer, Work *work, size_t *failed_index)
+   drive, not from a cache. Final names are re-checked in the same view:
+   still free for a new file, still the same old file for a replacement. */
+static int verify_all(Target *target, const OHCopyItem *items, Staged *staged,
+                      size_t count, unsigned char *buffer, Work *work,
+                      size_t *failed_index)
 {
     OHNTFSVolume *volume = NULL;
     uint32_t warnings = 0;
     int status = readonly_open(target, &volume, &warnings);
     if (status) return status;
     if (warnings) status = EBUSY;
+    FolderCache cache = { 0 };
     for (size_t i = 0; i < count && !status; ++i) {
         *failed_index = i;
         OHNTFSItem item;
         CC_SHA256_CTX sha;
         unsigned char actual[CC_SHA256_DIGEST_LENGTH];
         int exists = 0;
-        if (oh_ntfs_name_exists_nocase(volume, directory_inode,
-                                       items[i].destination_name, &exists) ||
-            exists) { status = exists ? EEXIST : EIO; break; }
+        if (item_folder(volume, &cache, &items[i], &staged[i].directory_inode)) {
+            status = EIO;
+            break;
+        }
+        if (oh_ntfs_name_exists_nocase(volume, staged[i].directory_inode,
+                                       items[i].destination_name, &exists)) {
+            status = EIO;
+            break;
+        }
+        if (staged[i].replacing) {
+            if (!exists || oh_ntfs_lookup(volume, staged[i].directory_inode,
+                                          items[i].destination_name, &item) ||
+                item.inode != staged[i].old_inode) { status = EIO; break; }
+        } else if (exists) { status = EEXIST; break; }
         if (oh_ntfs_lookup(volume, FILE_root, staged[i].pending, &item) ||
             item.kind != 1 || item.size != staged[i].size ||
             !CC_SHA256_Init(&sha)) { status = EIO; break; }
@@ -997,20 +1117,133 @@ static int verify_all(Target *target, const OHCopyItem *items,
     return target->io_failed ? EIO : status;
 }
 
-/* Stage 4: every verified file gets its final name, in one mount. */
-static int publish_all(Target *target, const char *directory_path,
-                       const OHCopyItem *items, const Staged *staged,
-                       size_t count, Work *work, size_t *failed_index)
+/* Stage 2, before any existing file is touched: folders that do not exist
+   yet are created, parents first, in one mount. */
+static int create_directories(Target *target, const char *const *directories,
+                              const unsigned char *missing, size_t count,
+                              Work *work, size_t *failed_index)
 {
     ntfs_volume *volume = mount_rw(target);
     if (!volume) return -1;
-    ntfs_inode *directory = open_directory(volume, directory_path);
-    int result = directory ? 0 : -1;
+    int result = 0;
+    for (size_t i = 0; i < count && !result; ++i) {
+        if (!missing[i]) continue;
+        *failed_index = i;
+        char parent[4097];
+        const char *leaf = NULL;
+        result = split_path(directories[i], parent, sizeof(parent), &leaf) ? -1 :
+            make_directory(volume, parent, leaf);
+        work_advance(work, OH_PHASE_WRITE, 0, UNIT_OVERHEAD / 8);
+    }
+    int failure = result ? errno : 0;
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    if (failure) errno = failure;
+    return result;
+}
+
+/* The recovery journal: one line per replacement, "folder TAB old-name TAB
+   final-name". Written and read back before the first old file is renamed,
+   removed only after every old file is gone. */
+static int write_journal(Target *target, const OHCopyItem *items,
+                         const Staged *staged, size_t count)
+{
+    size_t length = 0;
+    for (size_t i = 0; i < count; ++i)
+        if (staged[i].replacing)
+            length += strlen(item_directory(&items[i])) + strlen(staged[i].old) +
+                strlen(items[i].destination_name) + 3;
+    if (!length) return 0;
+    if (length > MAX_JOURNAL) { errno = EFBIG; return -1; }
+    char *text = malloc(length + 1);
+    if (!text) return -1;
+    size_t used = 0;
+    for (size_t i = 0; i < count; ++i)
+        if (staged[i].replacing)
+            used += (size_t)snprintf(text + used, length + 1 - used, "%s\t%s\t%s\n",
+                                     item_directory(&items[i]), staged[i].old,
+                                     items[i].destination_name);
+
+    int result = -1;
+    ntfs_volume *volume = mount_rw(target);
+    if (!volume) { free(text); return -1; }
+    ntfs_inode *root = ntfs_inode_open(volume, FILE_root);
+    ntfschar *wide = NULL;
+    int wide_length = ntfs_mbstoucs(journal_name, &wide);
+    ntfs_inode *created = root && wide_length > 0 ?
+        ntfs_create(root, const_cpu_to_le32(0), wide, (u8)wide_length, S_IFREG) : NULL;
+    ntfs_attr *data = NULL;
+    if (created) {
+        data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
+        if (!data && errno == ENOENT &&
+            !ntfs_attr_add(created, AT_DATA, AT_UNNAMED, 0, NULL, 0))
+            data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
+    }
+    if (data && ntfs_attr_pwrite(data, 0, (s64)length, text) == (s64)length)
+        result = 0;
+    int failure = result ? errno : 0;
+    if (data) ntfs_attr_close(data);
+    if (created && ntfs_inode_close(created)) result = -1;
+    if (root && ntfs_inode_close(root)) result = -1;
+    free(wide);
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    if (result) { free(text); if (failure) errno = failure; return -1; }
+
+    OHNTFSVolume *view = NULL;
+    uint32_t warnings = 0;
+    OHNTFSItem item;
+    char *check = malloc(length);
+    int status = check ? readonly_open(target, &view, &warnings) : ENOMEM;
+    if (!status && (oh_ntfs_lookup(view, FILE_root, journal_name, &item) ||
+                    item.size != length ||
+                    oh_ntfs_read(view, item.inode, 0, check, length) != (int64_t)length ||
+                    memcmp(check, text, length)))
+        status = EIO;
+    if (view) oh_ntfs_close(view);
+    free(check);
+    free(text);
+    if (status || target->io_failed) { errno = target->io_failed ? EIO : status; return -1; }
+    return 0;
+}
+
+static int remove_journal(Target *target)
+{
+    ntfs_volume *volume = mount_rw(target);
+    if (!volume) return -1;
+    int result = unlink_name(volume, "", journal_name);
+    if (ntfs_umount(volume, FALSE)) result = -1;
+    if (durable_sync(target)) result = -1;
+    return result;
+}
+
+/* Stage 4: every verified file gets its final name, in one mount. A file
+   being replaced first moves aside under its temporary old name. */
+static int publish_all(Target *target, const OHCopyItem *items,
+                       const Staged *staged, size_t count, Work *work,
+                       size_t *failed_index)
+{
+    ntfs_volume *volume = mount_rw(target);
+    if (!volume) return -1;
+    int result = 0;
     for (size_t i = 0; i < count && !result; ++i) {
         *failed_index = i;
         ntfschar *wide = NULL;
+        ntfs_inode *directory = NULL, *source = NULL;
         result = -1;
-        ntfs_inode *source = ntfs_pathname_to_inode(volume, NULL, staged[i].pending);
+        if (staged[i].replacing &&
+            rename_entry(volume, item_directory(&items[i]),
+                         items[i].destination_name, staged[i].old)) goto next;
+        #ifdef OPENHDD_TESTING
+        if (staged[i].replacing && getenv("OPENHDD_TEST_ABORT_AFTER_ASIDE")) {
+            ntfs_umount(volume, FALSE);
+            durable_sync(target);
+            _exit(86); /* the old file is aside, the new one not yet linked */
+        }
+        #endif
+        directory = open_directory(volume, item_directory(&items[i]));
+        if (!directory || directory->mft_no != staged[i].directory_inode) goto next;
+        source = ntfs_pathname_to_inode(volume, NULL, staged[i].pending);
         if (!source || source->mft_no != staged[i].inode) goto next;
         ntfs_inode *existing = ntfs_pathname_to_inode(volume, directory,
                                                        items[i].destination_name);
@@ -1026,19 +1259,20 @@ static int publish_all(Target *target, const char *directory_path,
     next:
         free(wide);
         if (source && ntfs_inode_close(source)) result = -1;
+        if (directory && ntfs_inode_close(directory)) result = -1;
         work_advance(work, OH_PHASE_PUBLISH, i, UNIT_OVERHEAD / 2);
     }
-    if (directory && ntfs_inode_close(directory)) result = -1;
+    int failure = result ? errno : 0;
     if (ntfs_umount(volume, FALSE)) result = -1;
     if (durable_sync(target)) result = -1;
+    if (failure) errno = failure;
     return result;
 }
 
 /* Checks names and identities without re-reading file contents: publish
    and completion only add or remove directory entries. */
-static int check_names(Target *target, uint64_t directory_inode,
-                       const OHCopyItem *items, const Staged *staged,
-                       size_t count, int pending_expected,
+static int check_names(Target *target, const OHCopyItem *items,
+                       const Staged *staged, size_t count, int pending_expected,
                        size_t *failed_index)
 {
     OHNTFSVolume *volume = NULL;
@@ -1048,27 +1282,34 @@ static int check_names(Target *target, uint64_t directory_inode,
     if (warnings) status = EBUSY;
     for (size_t i = 0; i < count && !status; ++i) {
         *failed_index = i;
-        OHNTFSItem final_item, pending_item;
+        OHNTFSItem final_item, pending_item, old_item;
         int pending = oh_ntfs_lookup(volume, FILE_root, staged[i].pending,
                                      &pending_item);
-        if (oh_ntfs_lookup(volume, directory_inode, items[i].destination_name,
-                           &final_item) ||
+        if (oh_ntfs_lookup(volume, staged[i].directory_inode,
+                           items[i].destination_name, &final_item) ||
             final_item.inode != staged[i].inode || final_item.kind != 1 ||
             final_item.size != staged[i].size ||
             final_item.hard_link_count != (pending_expected ? 2u : 1u) ||
             (pending_expected ? pending != 0 || pending_item.inode != staged[i].inode :
                                 pending != ENOENT))
             status = EIO;
+        if (!status && staged[i].replacing) {
+            int old = oh_ntfs_lookup(volume, staged[i].directory_inode,
+                                     staged[i].old, &old_item);
+            if (pending_expected ? old != 0 || old_item.inode != staged[i].old_inode :
+                                   old != ENOENT)
+                status = EIO;
+        }
     }
     oh_ntfs_close(volume);
     return target->io_failed ? EIO : status;
 }
 
-/* Stage 5: temporary names are removed, one directory entry at a time,
-   in a single mount. */
-static int complete_all(Target *target, const char *directory_path,
-                        const OHCopyItem *items, const Staged *staged,
-                        size_t count, Work *work, size_t *failed_index)
+/* Stage 5: temporary names and replaced files are removed, one directory
+   entry at a time, in a single mount. */
+static int complete_all(Target *target, const OHCopyItem *items,
+                        const Staged *staged, size_t count, Work *work,
+                        size_t *failed_index)
 {
     ntfs_volume *volume = mount_rw(target);
     if (!volume) return -1;
@@ -1076,7 +1317,7 @@ static int complete_all(Target *target, const char *directory_path,
     for (size_t i = 0; i < count && !result; ++i) {
         *failed_index = i;
         ntfschar *wide = NULL;
-        ntfs_inode *directory = open_directory(volume, directory_path);
+        ntfs_inode *directory = open_directory(volume, item_directory(&items[i]));
         ntfs_inode *final = directory ?
             ntfs_pathname_to_inode(volume, directory, items[i].destination_name) : NULL;
         ntfs_inode *temporary = ntfs_pathname_to_inode(volume, NULL, staged[i].pending);
@@ -1098,49 +1339,119 @@ static int complete_all(Target *target, const char *directory_path,
             result = -1; /* ntfs_delete closes both inodes */
         }
         free(wide);
+        if (!result && staged[i].replacing)
+            result = unlink_name(volume, item_directory(&items[i]), staged[i].old);
         work_advance(work, OH_PHASE_FINISH, i, UNIT_OVERHEAD / 2);
     }
+    int failure = result ? errno : 0;
     if (ntfs_umount(volume, FALSE)) result = -1;
     if (durable_sync(target)) result = -1;
+    if (failure) errno = failure;
     return result;
 }
 
 typedef struct {
-    char names[64][PENDING_LENGTH + 1];
-    size_t count;
+    char (*names)[PENDING_LENGTH + 1];
+    size_t count, capacity;
+    int journal;
 } PendingList;
 
 static int collect_pending(void *opaque, const char *name,
                            const OHNTFSItem *item)
 {
     PendingList *list = opaque;
+    if (!strcmp(name, journal_name)) {
+        if (item->kind != 1 || item->special) return EPERM;
+        list->journal = 1;
+        return 0;
+    }
     if (strncmp(name, pending_prefix, sizeof(pending_prefix) - 1)) return 0;
     if (item->kind != 1 || strlen(name) != PENDING_LENGTH ||
-        list->count == sizeof(list->names) / sizeof(list->names[0]))
+        list->count == MAX_PENDING)
         return EPERM;
+    if (list->count == list->capacity) {
+        size_t capacity = list->capacity ? list->capacity * 2 : 64;
+        void *grown = realloc(list->names, capacity * sizeof(*list->names));
+        if (!grown) return ENOMEM;
+        list->names = grown;
+        list->capacity = capacity;
+    }
     memcpy(list->names[list->count++], name, PENDING_LENGTH + 1);
     return 0;
 }
 
-/* Temporary names left by an interrupted session, on a volume that is no
-   longer dirty (Windows has checked it). Only OpenHDD's own temporaries are
-   removed: either unpublished partial files or the second name of a file
-   that was already published. The removal is itself a marked session. */
-static int remove_pending(Target *target, size_t *removed)
+static int read_journal(Target *target, char **text)
 {
-    PendingList list = { .count = 0 };
     OHNTFSVolume *view = NULL;
     uint32_t warnings = 0;
+    OHNTFSItem item;
+    int status = readonly_open(target, &view, &warnings);
+    if (status) return status;
+    status = warnings ? EBUSY : oh_ntfs_lookup(view, FILE_root, journal_name, &item);
+    if (!status && (item.kind != 1 || item.size > MAX_JOURNAL)) status = EPERM;
+    char *buffer = status ? NULL : malloc(item.size + 1);
+    if (!status && !buffer) status = ENOMEM;
+    if (!status && oh_ntfs_read(view, item.inode, 0, buffer, item.size) !=
+        (int64_t)item.size) status = EIO;
+    oh_ntfs_close(view);
+    if (status || target->io_failed) { free(buffer); return target->io_failed ? EIO : status; }
+    buffer[item.size] = 0;
+    *text = buffer;
+    return 0;
+}
+
+/* Replays the journal after Windows has checked the volume: when the final
+   name exists the new file was published and the old one is removed;
+   otherwise the old file gets its name back. Entries that are gone (for
+   example moved by chkdsk) are left alone. */
+static int apply_journal(ntfs_volume *volume, char *text)
+{
+    char *line, *cursor = text;
+    while ((line = strsep(&cursor, "\n"))) {
+        if (!*line) continue;
+        char *folder = strsep(&line, "\t");
+        char *old = strsep(&line, "\t");
+        char *final = line;
+        if (!folder || !old || !final || strncmp(old, old_prefix, sizeof(old_prefix) - 1) ||
+            !oh_ntfs_valid_new_name(final)) { errno = EPERM; return -1; }
+        ntfs_inode *directory = open_directory(volume, folder);
+        if (!directory) continue;
+        ntfs_inode *old_entry = ntfs_pathname_to_inode(volume, directory, old);
+        ntfs_inode *final_entry = old_entry ?
+            ntfs_pathname_to_inode(volume, directory, final) : NULL;
+        int published = final_entry != NULL;
+        if (final_entry) ntfs_inode_close(final_entry);
+        if (old_entry) ntfs_inode_close(old_entry);
+        if (ntfs_inode_close(directory)) return -1;
+        if (!old_entry) continue;
+        if (published ? unlink_name(volume, folder, old) :
+                        rename_entry(volume, folder, old, final)) return -1;
+    }
+    return 0;
+}
+
+/* Temporary names left by an interrupted session, on a volume that is no
+   longer dirty (Windows has checked it). Replacements in the journal are
+   settled first; then only OpenHDD's own temporaries are removed: either
+   unpublished partial files or the second name of a file that was already
+   published. The removal is itself a marked session. */
+static int remove_pending(Target *target, size_t *removed)
+{
+    PendingList list = { 0 };
+    OHNTFSVolume *view = NULL;
+    uint32_t warnings = 0;
+    char *journal = NULL;
     int status = readonly_open(target, &view, &warnings);
     if (status) return status;
     status = warnings ? EBUSY : oh_ntfs_list(view, FILE_root, collect_pending, &list);
     oh_ntfs_close(view);
-    if (status || target->io_failed) return target->io_failed ? EIO : status;
-    if (!list.count) return 0;
-    if (set_volume_dirty(target, 1)) return phase_error(target);
+    if (!status && target->io_failed) status = EIO;
+    if (!status && list.journal) status = read_journal(target, &journal);
+    if (status || (!list.count && !list.journal)) { free(list.names); return status; }
+    if (set_volume_dirty(target, 1)) { status = phase_error(target); goto out; }
     ntfs_volume *volume = mount_rw(target);
-    if (!volume) return phase_error(target);
-    int result = 0;
+    if (!volume) { status = phase_error(target); goto out; }
+    int result = journal ? apply_journal(volume, journal) : 0;
     for (size_t i = 0; i < list.count && !result; ++i) {
         ntfs_inode *root = ntfs_inode_open(volume, FILE_root);
         ntfs_inode *entry = ntfs_pathname_to_inode(volume, NULL, list.names[i]);
@@ -1156,20 +1467,178 @@ static int remove_pending(Target *target, size_t *removed)
         }
         free(wide);
     }
+    int failure = result ? errno : 0;
     if (ntfs_umount(volume, FALSE)) result = -1;
     if (durable_sync(target)) result = -1;
-    if (result) return phase_error(target);
-    if (set_volume_dirty(target, 0)) return phase_error(target);
-    *removed = list.count;
-    return 0;
+    /* The journal goes last, in its own mount, once every entry it names
+       is settled on the drive. */
+    if (!result && journal && remove_journal(target)) result = -1;
+    if (result) { if (failure) errno = failure; status = phase_error(target); goto out; }
+    if (set_volume_dirty(target, 0)) { status = phase_error(target); goto out; }
+    *removed = list.count + (journal ? 1 : 0);
+out:
+    free(journal);
+    free(list.names);
+    return status;
 }
 
-int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
-                      const char *directory_path,
-                      const OHCopyItem *items, size_t count,
-                      OHCopyProgress progress, void *progress_context,
-                      size_t *failed_index, int *failure_stage,
-                      uint32_t *safety_warnings, size_t *removed_pending)
+typedef struct {
+    char *key;
+    size_t index; /* items first, then folders to create */
+} NameKey;
+
+static int compare_keys(const void *a, const void *b)
+{
+    return strcmp(((const NameKey *)a)->key, ((const NameKey *)b)->key);
+}
+
+static char *entry_key(const char *folder, const char *name)
+{
+    size_t length = strlen(folder) + strlen(name) + 2;
+    char *joined = malloc(length);
+    if (!joined) return NULL;
+    snprintf(joined, length, "%s/%s", folder, name);
+    char *key = fold_key(joined);
+    free(joined);
+    return key;
+}
+
+/* Two entries in one folder whose names differ only in case, among the new
+   files and the folders to create. */
+static int duplicate_names(const char *const *directories,
+                           const unsigned char *missing, size_t directory_count,
+                           const OHCopyItem *items, size_t count,
+                           size_t *failed_index)
+{
+    NameKey *keys = calloc(count + directory_count + 1, sizeof(*keys));
+    size_t used = 0;
+    int status = keys ? 0 : ENOMEM;
+    for (size_t i = 0; i < count && !status; ++i) {
+        keys[used].key = entry_key(item_directory(&items[i]), items[i].destination_name);
+        keys[used].index = i;
+        if (!keys[used++].key) status = ENOMEM;
+    }
+    for (size_t i = 0; i < directory_count && !status; ++i) {
+        if (!missing[i]) continue;
+        char parent[4097];
+        const char *leaf = NULL;
+        if (split_path(directories[i], parent, sizeof(parent), &leaf)) { status = EINVAL; break; }
+        keys[used].key = entry_key(parent, leaf);
+        keys[used].index = count + i;
+        if (!keys[used++].key) status = ENOMEM;
+    }
+    if (!status) {
+        qsort(keys, used, sizeof(*keys), compare_keys);
+        for (size_t i = 1; i < used; ++i)
+            if (!strcmp(keys[i - 1].key, keys[i].key)) {
+                size_t index = keys[i].index < keys[i - 1].index ? keys[i - 1].index : keys[i].index;
+                *failed_index = index < count ? index : index - count;
+                if (index >= count)
+                    note_error("folder %zu clashes with another entry", index - count + 1);
+                status = EEXIST;
+                break;
+            }
+    }
+    for (size_t i = 0; keys && i < used; ++i) free(keys[i].key);
+    free(keys);
+    return status;
+}
+
+/* Read-only planning in one view: which folders must be created, where
+   every file goes, and which existing files are replaced. */
+static int plan_copy(Target *target, const char *const *directories,
+                     unsigned char *missing, size_t directory_count,
+                     const OHCopyItem *items, Staged *staged, size_t count,
+                     size_t *failed_index)
+{
+    OHNTFSVolume *volume = NULL;
+    uint32_t warnings = 0;
+    int status = readonly_open(target, &volume, &warnings);
+    if (status) return status;
+    if (warnings) status = EBUSY;
+    for (size_t i = 0; i < directory_count && !status; ++i) {
+        *failed_index = i;
+        uint64_t inode = 0;
+        status = resolve_plain_directory(volume, directories[i], &inode);
+        if (!status) { missing[i] = 0; continue; }
+        if (status != ENOENT) {
+            if (status == ENOTDIR) status = EEXIST; /* a file is in the way */
+            note_error("folder \"%s\" cannot be used", directories[i]);
+            break;
+        }
+        char parent[4097];
+        const char *leaf = NULL;
+        if (split_path(directories[i], parent, sizeof(parent), &leaf)) { status = EINVAL; break; }
+        status = 0;
+        int parent_planned = 0;
+        for (size_t j = 0; j < i && !parent_planned; ++j)
+            parent_planned = missing[j] && !strcmp(directories[j], parent);
+        if (!parent_planned) {
+            status = resolve_plain_directory(volume, parent, &inode);
+            if (status) { note_error("parent of folder \"%s\" not found", directories[i]); break; }
+            int exists = 0;
+            status = oh_ntfs_name_exists_nocase(volume, inode, leaf, &exists);
+            if (!status && exists) {
+                status = EEXIST;
+                note_error("folder \"%s\": a file with that name exists", directories[i]);
+            }
+        }
+        missing[i] = 1;
+    }
+    FolderCache cache = { 0 };
+    for (size_t i = 0; i < count && !status; ++i) {
+        *failed_index = i;
+        const char *folder = item_directory(&items[i]);
+        int planned = 0;
+        for (size_t j = 0; j < directory_count && !planned; ++j)
+            planned = missing[j] && !strcmp(directories[j], folder);
+        staged[i].directory_inode = 0;
+        if (planned) continue; /* a new folder: only the batch itself can clash */
+        status = item_folder(volume, &cache, &items[i], &staged[i].directory_inode);
+        if (status) break;
+        int exists = 0;
+        status = oh_ntfs_name_exists_nocase(volume, staged[i].directory_inode,
+                                            items[i].destination_name, &exists);
+        if (status || !exists) continue;
+        if (!items[i].replace) { status = EEXIST; break; }
+        ExactName probe = { .name = items[i].destination_name };
+        status = oh_ntfs_list(volume, staged[i].directory_inode, find_exact_name, &probe);
+        if (status) break;
+        if (!probe.found) {
+            note_error("the existing name differs in letter case");
+            status = EEXIST;
+            break;
+        }
+        if (probe.item.special) { status = ENOTSUP; break; }
+        if (probe.item.kind != 1) {
+            note_error("a folder cannot be replaced by a file");
+            status = EISDIR;
+            break;
+        }
+        staged[i].replacing = 1;
+        staged[i].old_inode = probe.item.inode;
+        make_temporary_name(staged[i].old, old_prefix);
+    }
+    oh_ntfs_close(volume);
+    if (!status)
+        status = duplicate_names(directories, missing, directory_count, items,
+                                 count, failed_index);
+    return target->io_failed ? EIO : status;
+}
+
+uint64_t oh_copy_work_units(uint64_t bytes, size_t files, size_t directories)
+{
+    /* write + one read-back + publish/complete bookkeeping */
+    return 2 * bytes + (uint64_t)files * UNIT_OVERHEAD +
+        (uint64_t)directories * (UNIT_OVERHEAD / 8);
+}
+
+int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
+                  const char *const *directories, size_t directory_count,
+                  const OHCopyItem *items, size_t count,
+                  OHCopyProgress progress, void *progress_context,
+                  size_t *failed_index, int *failure_stage,
+                  uint32_t *safety_warnings, size_t *removed_pending)
 {
     if (!failure_stage || !safety_warnings || !failed_index) return EINVAL;
     last_error[0] = 0;
@@ -1177,30 +1646,39 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     *failed_index = 0;
     *safety_warnings = 0;
     if (removed_pending) *removed_pending = 0;
-    if (!items || !count || count > MAX_ITEMS) return EINVAL;
+    if ((!items && count) || count > MAX_ITEMS || (!directories && directory_count) ||
+        directory_count > MAX_DIRECTORIES || !(count + directory_count)) return EINVAL;
     struct stat target_info;
     if (fstat(target_fd, &target_info)) return EINVAL;
     if (is_device ? !(S_ISBLK(target_info.st_mode) || S_ISCHR(target_info.st_mode)) :
         !S_ISREG(target_info.st_mode)) return EPERM;
     if (target_size < 4096 || target_size > INT64_MAX) return EINVAL;
-    if (directory_path && (!*directory_path || !strcmp(directory_path, "/")))
-        directory_path = NULL;
-    if (!oh_ntfs_valid_directory_path(directory_path)) return EINVAL;
+    for (size_t i = 0; i < directory_count; ++i) {
+        *failed_index = i;
+        const char *path = directories[i];
+        if (!path || !*path || path[0] == '/' || !oh_ntfs_valid_directory_path(path)) {
+            note_error("invalid folder %zu", i + 1);
+            return EINVAL;
+        }
+        if (protected_path(path)) return EACCES;
+    }
     ntfs_log_set_handler(ntfs_log_handler_null);
 
-    struct stat *sources = calloc(count, sizeof(*sources));
-    Staged *staged = NULL;
+    struct stat *sources = calloc(count + 1, sizeof(*sources));
+    Staged *staged = calloc(count + 1, sizeof(*staged));
+    unsigned char *missing = calloc(directory_count + 1, 1);
     unsigned char *buffer = NULL;
-    if (!sources) return ENOMEM;
-    int status = 0;
+    int status = sources && staged && missing ? 0 : ENOMEM;
     uint64_t total = 0;
     for (size_t i = 0; i < count && !status; ++i) {
         *failed_index = i;
-        if (!oh_ntfs_valid_new_name(items[i].destination_name)) status = EINVAL;
-        for (size_t j = 0; j < i && !status; ++j)
-            if (same_name_ignoring_case(items[i].destination_name,
-                                        items[j].destination_name))
-                status = EEXIST;
+        const char *folder = item_directory(&items[i]);
+        if (!oh_ntfs_valid_new_name(items[i].destination_name) ||
+            folder[0] == '/' || (*folder && !oh_ntfs_valid_directory_path(folder)))
+            status = EINVAL;
+        else if ((*folder && protected_path(folder)) ||
+                 !strncmp(items[i].destination_name, ".OpenHDD-", 9))
+            status = EACCES;
         if (!status && (fstat(items[i].source_fd, &sources[i]) ||
             !S_ISREG(sources[i].st_mode) || sources[i].st_size < 0 ||
             sources[i].st_size > INT64_MAX / 2 ||
@@ -1220,10 +1698,9 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     if (!target.align) { status = EIO; goto out; }
     Work work = { .callback = progress, .context = progress_context,
                   .count = count,
-                  /* write + one read-back + publish/complete bookkeeping */
-                  .total = 2 * total + (uint64_t)count * UNIT_OVERHEAD };
+                  .total = oh_copy_work_units(total, count, directory_count) };
     work_report(&work, OH_PHASE_PREPARE, 0);
-    uint64_t free_bytes = 0, directory_inode = FILE_root;
+    uint64_t free_bytes = 0;
     *failed_index = 0;
     status = volume_scan(&target, &free_bytes, safety_warnings);
     if (status == EINPROGRESS && !*safety_warnings && removed_pending) {
@@ -1236,27 +1713,22 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
         status = volume_scan(&target, &free_bytes, safety_warnings);
     }
     if (status) goto out;
-    if (directory_path) {
-        status = resolve_directory(&target, directory_path, &directory_inode);
-        if (status) goto out;
-    }
-    for (size_t i = 0; i < count && !status; ++i) {
-        *failed_index = i;
-        status = name_is_free(&target, directory_inode,
-                              items[i].destination_name);
-    }
+    status = plan_copy(&target, directories, missing, directory_count, items,
+                       staged, count, failed_index);
     if (status) goto out;
     *failed_index = 0;
+    size_t replacing = 0, creating = 0;
+    for (size_t i = 0; i < count; ++i) replacing += staged[i].replacing != 0;
+    for (size_t i = 0; i < directory_count; ++i) creating += missing[i] != 0;
     uint64_t reserve = total / 100;
     if (reserve < 16 * 1024 * 1024) reserve = 16 * 1024 * 1024;
-    /* Per-file metadata overhead: MFT record and index growth. */
-    reserve += (uint64_t)count * 64 * 1024;
+    /* Per-entry metadata overhead: MFT record and index growth. */
+    reserve += (uint64_t)(count + creating) * 64 * 1024;
     if (free_bytes < total || free_bytes - total < reserve) {
         status = ENOSPC;
         goto out;
     }
-    staged = calloc(count, sizeof(*staged));
-    if (!staged || posix_memalign((void **)&buffer, 4096, IO_CHUNK)) {
+    if (posix_memalign((void **)&buffer, 4096, IO_CHUNK)) {
         status = ENOMEM;
         goto out;
     }
@@ -1267,15 +1739,19 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     #endif
     *failure_stage = 2;
     if (set_volume_dirty(&target, 1)) { status = phase_error(&target); goto out; }
-    if (write_all(&target, items, sources, staged, count, buffer, &work,
-                  failed_index)) { status = phase_error(&target); goto out; }
+    if (creating && create_directories(&target, directories, missing, directory_count,
+                                       &work, failed_index)) {
+        status = phase_error(&target);
+        goto out;
+    }
+    if (count && write_all(&target, items, sources, staged, count, buffer, &work,
+                           failed_index)) { status = phase_error(&target); goto out; }
 
     *failure_stage = 3;
     #ifdef OPENHDD_TESTING
     abort_at_stage(3);
     #endif
-    status = verify_all(&target, items, directory_inode, staged, count, buffer,
-                        &work, failed_index);
+    status = verify_all(&target, items, staged, count, buffer, &work, failed_index);
     if (status) goto out;
 
     *failure_stage = 4;
@@ -1283,21 +1759,28 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     abort_at_stage(4);
     if (getenv("OPENHDD_TEST_FAIL_BEFORE_PUBLISH")) { status = EIO; goto out; }
     #endif
-    if (publish_all(&target, directory_path, items, staged, count, &work,
-                    failed_index)) { status = phase_error(&target); goto out; }
+    if (replacing && write_journal(&target, items, staged, count)) {
+        status = phase_error(&target);
+        goto out;
+    }
+    if (count && publish_all(&target, items, staged, count, &work, failed_index)) {
+        status = phase_error(&target);
+        goto out;
+    }
 
     *failure_stage = 5;
     #ifdef OPENHDD_TESTING
     abort_at_stage(5);
     #endif
-    status = check_names(&target, directory_inode, items, staged, count, 1,
-                         failed_index);
+    status = check_names(&target, items, staged, count, 1, failed_index);
     if (status) goto out;
-    if (complete_all(&target, directory_path, items, staged, count, &work,
-                     failed_index)) { status = phase_error(&target); goto out; }
-    status = check_names(&target, directory_inode, items, staged, count, 0,
-                         failed_index);
+    if (count && complete_all(&target, items, staged, count, &work, failed_index)) {
+        status = phase_error(&target);
+        goto out;
+    }
+    status = check_names(&target, items, staged, count, 0, failed_index);
     if (status) goto out;
+    if (replacing && remove_journal(&target)) { status = phase_error(&target); goto out; }
 
     *failure_stage = 6;
     #ifdef OPENHDD_TESTING
@@ -1309,7 +1792,7 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     if (status || final_warnings) { status = status ? status : EIO; goto out; }
     *failure_stage = 0;
     work.done = work.total;
-    work_report(&work, OH_PHASE_FINISH, count - 1);
+    work_report(&work, OH_PHASE_FINISH, count ? count - 1 : 0);
     #ifdef OPENHDD_TESTING
     abort_at_stage(0);
     if (getenv("OPENHDD_TEST_REPORT_WRITES"))
@@ -1317,8 +1800,35 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
     #endif
 out:
     free(buffer);
+    free(missing);
     free(staged);
     free(sources);
+    return status;
+}
+
+int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
+                      const char *directory_path,
+                      const OHCopyItem *items, size_t count,
+                      OHCopyProgress progress, void *progress_context,
+                      size_t *failed_index, int *failure_stage,
+                      uint32_t *safety_warnings, size_t *removed_pending)
+{
+    if (!failure_stage || !safety_warnings || !failed_index) return EINVAL;
+    if (!items || !count || count > MAX_ITEMS) return EINVAL;
+    if (directory_path && (!*directory_path || !strcmp(directory_path, "/")))
+        directory_path = NULL;
+    if (!oh_ntfs_valid_directory_path(directory_path)) return EINVAL;
+    OHCopyItem *copy = calloc(count, sizeof(*copy));
+    if (!copy) return ENOMEM;
+    for (size_t i = 0; i < count; ++i) {
+        copy[i] = items[i];
+        copy[i].directory = directory_path;
+        copy[i].replace = 0;
+    }
+    int status = oh_copy_files(target_fd, target_size, is_device, NULL, 0, copy,
+                               count, progress, progress_context, failed_index,
+                               failure_stage, safety_warnings, removed_pending);
+    free(copy);
     return status;
 }
 
@@ -1556,11 +2066,41 @@ static int make_directory(ntfs_volume *volume, const char *parent_path,
     return result;
 }
 
+/* Move to another folder, keeping the name: add the name there, then
+   remove it here. NTFS keeps the parent in each name, so a folder moves
+   with everything below it. */
+static int move_entry(ntfs_volume *volume, const char *parent_path,
+                      const char *name, const char *destination_path)
+{
+    ntfs_inode *directory = open_directory(volume, parent_path);
+    ntfs_inode *destination = open_directory(volume, destination_path);
+    ntfs_inode *ni = directory ? lookup_child(volume, directory, name) : NULL;
+    int result = ni && destination ? link_name(ni, destination, name) : -1;
+    if (ni) ntfs_inode_close(ni);
+    if (destination) ntfs_inode_close(destination);
+    if (directory) ntfs_inode_close(directory);
+    if (result) return -1;
+    return unlink_name(volume, parent_path, name);
+}
+
+/* True when `path` is `ancestor` or lies below it, ignoring case. */
+static int path_within(const char *path, const char *ancestor)
+{
+    char *a = fold_key(path), *b = fold_key(ancestor);
+    size_t length = b ? strlen(b) : 0;
+    int within = !a || !b || (!strncmp(a, b, length) &&
+                              (a[length] == 0 || a[length] == '/'));
+    free(a);
+    free(b);
+    return within; /* fail closed */
+}
+
 typedef struct {
     char parent[1025];
     const char *leaf;
     uint64_t parent_inode;
     uint64_t inode;
+    uint64_t destination_inode;
     int directory;
 } EditPlan;
 
@@ -1595,6 +2135,42 @@ static int plan_edits(Target *target, const OHEdit *edits, EditPlan *plans,
             if (item.special) { status = ENOTSUP; break; }
             plan->inode = item.inode;
             plan->directory = item.kind == 2;
+            if (edit->kind == OH_EDIT_MOVE) {
+                status = resolve_plain_directory(volume, edit->name,
+                                                 &plan->destination_inode);
+                if (status) { note_error("destination folder not usable"); break; }
+                if (plan->destination_inode == plan->parent_inode) {
+                    note_error("item %zu is already in that folder", i + 1);
+                    status = EINVAL;
+                    break;
+                }
+                if (plan->directory && path_within(edit->name, edit->path)) {
+                    note_error("a folder cannot be moved into itself");
+                    status = EINVAL;
+                    break;
+                }
+                int exists = 0;
+                status = oh_ntfs_name_exists_nocase(volume, plan->destination_inode,
+                                                    plan->leaf, &exists);
+                if (!status && exists) status = EEXIST;
+                if (status) break;
+                /* Items of one request must not land on the same name or
+                   contain each other: later paths would no longer hold. */
+                for (size_t j = 0; j < i && !status; ++j) {
+                    if (edits[j].kind != OH_EDIT_MOVE) continue;
+                    if ((plans[j].destination_inode == plan->destination_inode &&
+                         same_name_ignoring_case(plans[j].leaf, plan->leaf)))
+                        status = EEXIST;
+                    else if (path_within(edit->path, edits[j].path) ||
+                             path_within(edits[j].path, edit->path)) {
+                        note_error("items %zu and %zu overlap", j + 1, i + 1);
+                        status = EINVAL;
+                    }
+                }
+                if (status) break;
+                *units += 1;
+                continue;
+            }
             if (edit->kind == OH_EDIT_DELETE) {
                 uint64_t entries = 1;
                 if (plan->directory) status = count_tree(volume, item.inode, &entries);
@@ -1641,6 +2217,12 @@ static int check_edits(Target *target, const OHEdit *edits, const EditPlan *plan
             found = oh_ntfs_lookup(volume, plans[i].parent_inode, plans[i].leaf, &item);
             if (found != ENOENT) status = found ? found : EIO;
             break;
+        case OH_EDIT_MOVE:
+            if (oh_ntfs_lookup(volume, plans[i].destination_inode, plans[i].leaf, &item) ||
+                item.inode != plans[i].inode) { status = EIO; break; }
+            found = oh_ntfs_lookup(volume, plans[i].parent_inode, plans[i].leaf, &item);
+            if (found != ENOENT) status = EIO;
+            break;
         case OH_EDIT_RENAME:
             if (oh_ntfs_lookup(volume, plans[i].parent_inode, edits[i].name, &item) ||
                 item.inode != plans[i].inode) { status = EIO; break; }
@@ -1684,12 +2266,18 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
                 !oh_ntfs_valid_new_name(edit->name)) return EINVAL;
             continue;
         }
-        if (edit->kind != OH_EDIT_DELETE && edit->kind != OH_EDIT_RENAME) return EINVAL;
+        if (edit->kind != OH_EDIT_DELETE && edit->kind != OH_EDIT_RENAME &&
+            edit->kind != OH_EDIT_MOVE) return EINVAL;
         if (!edit->path || !*edit->path || edit->path[0] == '/' ||
             !oh_ntfs_valid_directory_path(edit->path)) return EINVAL;
         if (protected_path(edit->path)) return EACCES;
         if (edit->kind == OH_EDIT_RENAME && !oh_ntfs_valid_new_name(edit->name))
             return EINVAL;
+        if (edit->kind == OH_EDIT_MOVE) {
+            if (!edit->name || edit->name[0] == '/' ||
+                !oh_ntfs_valid_directory_path(edit->name)) return EINVAL;
+            if (*edit->name && protected_path(edit->name)) return EACCES;
+        }
     }
     ntfs_log_set_handler(ntfs_log_handler_null);
     Target target = { .fd = target_fd, .size = target_size, .is_device = is_device,
@@ -1735,6 +2323,9 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
             free(wide);
         } else if (edit->kind == OH_EDIT_RENAME) {
             result = rename_entry(volume, plans[i].parent, plans[i].leaf, edit->name);
+            work_advance(&work, OH_PHASE_WRITE, i, 1);
+        } else if (edit->kind == OH_EDIT_MOVE) {
+            result = move_entry(volume, plans[i].parent, plans[i].leaf, edit->name);
             work_advance(&work, OH_PHASE_WRITE, i, 1);
         } else {
             result = make_directory(volume, plans[i].parent, edit->name);

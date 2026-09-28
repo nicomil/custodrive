@@ -23,6 +23,9 @@ typedef void (*OHCopyProgress)(void *context, int phase, size_t file_index,
 typedef struct {
     int source_fd;               /* regular file, opened read-only */
     const char *destination_name; /* UTF-8, NFC, validated by oh_ntfs_valid_new_name */
+    const char *directory;       /* folder relative to the root; NULL or "" = root */
+    int replace;                 /* 1: an existing file with exactly this name is
+                                    replaced once the new one is verified */
 } OHCopyItem;
 
 /* Stage reported on failure. 1 = preflight (nothing written), 2 = dirty mark
@@ -40,6 +43,22 @@ int oh_ntfs_valid_new_name(const char *name);
 int oh_ntfs_valid_directory_path(const char *path);
 int oh_ntfs_safety_preflight(int target_fd, uint64_t target_size,
                              uint64_t *free_bytes, uint32_t *warnings);
+/* Copies files into any folders of the volume, first creating the folders
+   listed in `directories` (relative paths, parents before children; ones
+   that already exist are kept and merged). An item with replace = 1 swaps
+   an existing file of the same name only after the new data is verified;
+   the swap is recorded in a recovery journal so that an interruption always
+   leaves either the old or the new file under the name. `count` may be 0
+   when only folders are created. */
+int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
+                  const char *const *directories, size_t directory_count,
+                  const OHCopyItem *items, size_t count,
+                  OHCopyProgress progress, void *progress_context,
+                  size_t *failed_index, int *failure_stage,
+                  uint32_t *safety_warnings, size_t *removed_pending);
+/* Progress units oh_copy_files reports as its total, so that a caller
+   running several batches can show one bar. */
+uint64_t oh_copy_work_units(uint64_t bytes, size_t files, size_t directories);
 int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
                       const char *directory_path,
                       const OHCopyItem *items, size_t count,
@@ -49,13 +68,14 @@ int oh_copy_new_files(int target_fd, uint64_t target_size, int is_device,
 /* v2 edits of existing entries. Paths are relative to the volume root,
    '/'-separated, NFC. Delete removes a file or a whole folder (never
    following junctions or symbolic links); rename stays in the same folder;
-   new folder creates `name` inside `path` ("" for the root). All edits of a
-   call run in one session marked dirty, like a copy. */
-enum { OH_EDIT_DELETE = 1, OH_EDIT_RENAME = 2, OH_EDIT_MKDIR = 3 };
+   new folder creates `name` inside `path` ("" for the root); move puts
+   `path` into the folder `name` ("" for the root), keeping its name. All
+   edits of a call run in one session marked dirty, like a copy. */
+enum { OH_EDIT_DELETE = 1, OH_EDIT_RENAME = 2, OH_EDIT_MKDIR = 3, OH_EDIT_MOVE = 4 };
 typedef struct {
     int kind;
     const char *path;
-    const char *name; /* new name for rename and new folder */
+    const char *name; /* new name (rename, new folder) or destination folder (move) */
 } OHEdit;
 int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
                    const OHEdit *edits, size_t count,

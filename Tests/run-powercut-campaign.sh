@@ -14,8 +14,11 @@
 # A clean (committed) image must keep the pre-existing file intact.
 #
 # Usage: Tests/run-powercut-campaign.sh [PARTITION_IMAGE [EXPORT_DIR [SEEDS]]]
-# OPENHDD_CAMPAIGN_EDIT=delete|rename|mkdir cuts a v2 edit instead of a copy
-# (on a fresh fixture that also holds the folder Foto/Estate/b.bin).
+# OPENHDD_CAMPAIGN_EDIT=delete|rename|mkdir|move cuts a v2/v3 edit instead of a
+# copy (on a fresh fixture that also holds the folder Foto/Estate/b.bin);
+# replace cuts the replacement of /target.bin, and every marked image is then
+# repaired (ntfsfix) and recovered by the next session, which must leave the
+# old or the new content under the name; tree cuts a folder copy.
 # PARTITION_IMAGE must already contain /old.bin (defaults to a fresh fixture).
 # EXPORT_DIR receives sample images from nine cuts spread over the session.
 set -eu
@@ -48,16 +51,33 @@ export_dir=${2:-}
 [ -z "$export_dir" ] || mkdir -p "$export_dir"
 dd if=/dev/urandom of="$work/new.bin" bs=1k count=2100 status=none
 edit=${OPENHDD_CAMPAIGN_EDIT:-}
-if [ -n "$edit" ]; then
-  "$tool" --image "$base" --mkdir "" Foto > /dev/null
-  "$tool" --image "$base" --mkdir Foto Estate > /dev/null
-  "$tool" --image "$base" --dir Foto/Estate "$work/new.bin" b.bin > /dev/null
+case "$edit" in
+  delete|rename|mkdir|move)
+    "$tool" --image "$base" --mkdir "" Foto > /dev/null
+    "$tool" --image "$base" --mkdir Foto Estate > /dev/null
+    "$tool" --image "$base" --mkdir "" Archivio > /dev/null
+    "$tool" --image "$base" --dir Foto/Estate "$work/new.bin" b.bin > /dev/null ;;
+  replace)
+    dd if=/dev/urandom of="$work/target.bin" bs=1k count=900 status=none
+    "$tool" --image "$base" "$work/target.bin" target.bin > /dev/null ;;
+  tree)
+    dd if=/dev/urandom of="$work/small.bin" bs=1k count=40 status=none
+    printf '%s\0' D Album D "Album/Giorno è" F "$work/new.bin" Album a.bin 0 \
+      F "$work/small.bin" "Album/Giorno è" b.bin 0 > "$work/tree.manifest" ;;
+esac
+# Keeps the fixture's source files for callers that check contents later.
+if [ -n "${OPENHDD_CAMPAIGN_KEEP:-}" ]; then
+  mkdir -p "$OPENHDD_CAMPAIGN_KEEP"
+  cp "$work"/*.bin "$OPENHDD_CAMPAIGN_KEEP"/
 fi
 operation() { # image
   case "$edit" in
     delete) "$tool" --image "$1" --delete Foto ;;
     rename) "$tool" --image "$1" --rename Foto "Foto 2026" ;;
     mkdir) "$tool" --image "$1" --mkdir "" Nuova ;;
+    move) "$tool" --image "$1" --move Archivio Foto ;;
+    replace) "$tool" --image "$1" --replace "$work/new.bin" target.bin ;;
+    tree) "$tool" --image "$1" --manifest "$work/tree.manifest" ;;
     *) "$tool" --image "$1" "$work/new.bin" new.bin ;;
   esac
 }
@@ -67,6 +87,11 @@ committed() { # image: the operation's effect is complete and readable
     rename) "$ntfscat" "$1" "/Foto 2026/Estate/b.bin" 2>/dev/null | cmp -s - "$work/new.bin" &&
             ! "$build/ntfsprogs/ntfsls" -p / "$1" 2>/dev/null | grep -q '^Foto$' ;;
     mkdir) "$build/ntfsprogs/ntfsls" -p / "$1" 2>/dev/null | grep -q '^Nuova$' ;;
+    move) "$ntfscat" "$1" "/Archivio/Foto/Estate/b.bin" 2>/dev/null | cmp -s - "$work/new.bin" &&
+          ! "$build/ntfsprogs/ntfsls" -p / "$1" 2>/dev/null | grep -q '^Foto$' ;;
+    replace) "$ntfscat" "$1" /target.bin 2>/dev/null | cmp -s - "$work/new.bin" ;;
+    tree) "$ntfscat" "$1" /Album/a.bin 2>/dev/null | cmp -s - "$work/new.bin" &&
+          "$ntfscat" "$1" "/Album/Giorno è/b.bin" 2>/dev/null | cmp -s - "$work/small.bin" ;;
     *) "$ntfscat" "$1" /new.bin > "$work/new-read.bin" 2>/dev/null &&
        cmp -s "$work/new.bin" "$work/new-read.bin" ;;
   esac
@@ -81,6 +106,29 @@ test -n "$writes"
 step=$((writes / 8))
 [ "$step" -gt 0 ] || step=1
 untouched=0 marked=0 damaged=0 committed=0 unreadable=0 violations=0 runs=0
+recovered=0 unrepairable=0
+# Replace only: after the emulated Windows repair the next session settles
+# the journal; the name must then hold the old or the new file.
+recover_replace() { # image
+  cp "$1" "$work/recover.img"
+  "$build/ntfsprogs/ntfsfix" -d "$work/recover.img" > /dev/null 2>&1 || return 0
+  if ! "$tool" --image "$work/recover.img" --mkdir "" dopo > /dev/null 2>&1; then
+    unrepairable=$((unrepairable + 1)) # ntfsfix is no chkdsk: Windows decides
+    return 0
+  fi
+  "$ntfscat" "$work/recover.img" /target.bin > "$work/target-read.bin" 2>/dev/null ||
+    { echo "FAIL: target.bin missing after recovery at cut $cut seed $seed" >&2; exit 1; }
+  if ! cmp -s "$work/target-read.bin" "$work/target.bin" &&
+     ! cmp -s "$work/target-read.bin" "$work/new.bin"; then
+    echo "FAIL: target.bin neither old nor new after recovery at cut $cut seed $seed" >&2
+    exit 1
+  fi
+  if "$build/ntfsprogs/ntfsls" -f -R -p / "$work/recover.img" 2>/dev/null | grep -q OpenHDD; then
+    echo "FAIL: OpenHDD entries left after recovery at cut $cut seed $seed" >&2
+    exit 1
+  fi
+  recovered=$((recovered + 1))
+}
 cut=1
 while [ "$cut" -le "$writes" ]; do
   seed=1
@@ -125,6 +173,7 @@ while [ "$cut" -le "$writes" ]; do
         class=damaged
       fi
     fi
+    if [ "$edit" = replace ] && [ "$class" = marked ]; then recover_replace "$image"; fi
     case "$class" in
       untouched) untouched=$((untouched + 1)) ;;
       marked) marked=$((marked + 1)) ;;
@@ -146,6 +195,7 @@ done
 
 printf 'sector=%s writes=%s runs=%s untouched=%s marked=%s damaged=%s committed=%s unreadable=%s violations=%s\n' \
   "${OPENHDD_TEST_POWERCUT_SECTOR:-512}" "$writes" "$runs" "$untouched" "$marked" "$damaged" "$committed" "$unreadable" "$violations"
+[ "$edit" != replace ] || printf 'replace recovery: recovered=%s left-to-windows=%s\n' "$recovered" "$unrepairable"
 test "$violations" -eq 0
 echo 'PASS: every cut left the volume untouched, marked for checking or committed; old file intact'
 echo 'Windows must still confirm that chkdsk /f repairs the marked images.'

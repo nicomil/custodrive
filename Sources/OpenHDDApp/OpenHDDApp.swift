@@ -1,6 +1,7 @@
 import SwiftUI
 import DiskArbitration
 import Darwin
+import UniformTypeIdentifiers
 
 @main
 struct OpenHDDApp: App {
@@ -471,61 +472,124 @@ extension DiskStore {
         return record.isNTFS && record.isExternal && !busy
     }
 
-    /// Asks for files and a destination, confirms, then runs the copy.
+    /// Asks for files or folders, then continues like a drop.
     func beginCopy() {
-        guard let record = currentSelection(), record.isNTFS else { return }
+        guard let record = currentSelection(), canCopy(record) else { return }
         let panel = NSOpenPanel()
-        panel.title = "Scegli i file da copiare su «\(record.name)»"
+        panel.title = "Scegli file o cartelle da copiare su «\(record.name)»"
         panel.prompt = "Avanti"
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-        let sources = panel.urls
+        startCopy(panel.urls, to: record)
+    }
 
-        var names: [String] = []
-        var sizes: [UInt64] = []
-        var problems: [String] = []
-        for url in sources {
-            let name = NTFSCopyRunner.normalized(url.lastPathComponent)
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
-            if values?.isRegularFile != true || values?.isSymbolicLink == true {
-                problems.append("«\(name)»: non è un file normale")
-            } else if let problem = NTFSCopyRunner.problem(withName: name) {
-                problems.append("«\(name)»: \(problem)")
+    /// Files dragged from the Finder onto a disk row (or the list).
+    func drop(_ providers: [NSItemProvider], on target: DiskRecord?) -> Bool {
+        guard let record = target ?? currentSelection(), canCopy(record) else { return false }
+        let wanted = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !wanted.isEmpty else { return false }
+        selected = record.id
+        let group = DispatchGroup()
+        let collected = DroppedURLs()
+        for provider in wanted {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url, url.isFileURL { collected.append(url) }
+                group.leave()
             }
-            if names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
-                problems.append("«\(name)»: scelto due volte")
-            }
-            names.append(name)
-            sizes.append(UInt64(values?.fileSize ?? 0))
         }
-        guard problems.isEmpty else {
-            alert("Alcuni file non possono essere copiati così", problems.joined(separator: "\n") +
-                  "\n\nRinominali sul Mac e riprova.")
+        group.notify(queue: .main) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let urls = collected.all
+                if urls.isEmpty {
+                    self.alert("Niente da copiare", "Trascina file o cartelle dal Finder.")
+                } else {
+                    self.startCopy(urls, to: record)
+                }
+            }
+        }
+        return true
+    }
+
+    /// Destination, walk of the folders (off the main thread), comparison
+    /// with the volume, choices about existing files, confirmation.
+    private func startCopy(_ sources: [URL], to record: DiskRecord) {
+        guard canCopy(record), let destination = chooseDestination(record) else { return }
+        busy = true
+        message = "Preparazione dell'elenco dei file…"
+        let mount = record.mountURL
+        Task.detached { [store = self] in
+            var scan = CopyScanner.scan(sources, into: destination)
+            if let mount { CopyScanner.compare(&scan, mount: mount) }
+            let result = scan
+            await MainActor.run {
+                store.busy = false
+                store.message = ""
+                store.confirmCopy(result, destination: destination, record: record)
+            }
+        }
+    }
+
+    private func listed(_ items: [String], limit: Int = 8) -> String {
+        items.prefix(limit).map { "• \($0)" }.joined(separator: "\n") +
+            (items.count > limit ? "\n… e altri \(items.count - limit)" : "")
+    }
+
+    private func confirmCopy(_ scan: CopyScan, destination: String, record: DiskRecord) {
+        guard scan.problems.isEmpty else {
+            alert("Alcuni elementi non possono essere copiati così",
+                  listed(scan.problems, limit: 10) + "\n\nSistemali sul Mac (o sul disco) e riprova.")
             return
         }
+        var plan = CopyPlan(partition: record.bsdName, volumeName: record.name,
+                            entries: scan.entries, folders: scan.folders,
+                            destination: destination)
+        if !scan.existing.isEmpty {
+            let ask = NSAlert()
+            ask.messageText = "\(scan.existing.count) file esistono già su «\(record.name)»"
+            ask.informativeText = listed(scan.existing.map { plan.entries[$0].path }) + """
 
-        guard let directory = chooseDestination(record) else { return }
-        let plan = CopyPlan(partition: record.bsdName, volumeName: record.name,
-                            sources: sources, names: names, sizes: sizes,
-                            directory: directory.isEmpty ? nil : directory)
-        if let mount = record.mountURL {
-            let folder = directory.isEmpty ? mount : mount.appendingPathComponent(directory)
-            let clashes = names.filter { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
-            if !clashes.isEmpty {
-                alert("File già presenti", "Nella destinazione esistono già: " + clashes.joined(separator: ", ") +
-                      ".\nOpenHDD non sovrascrive file esistenti.")
+
+            «Sostituisci»: il file sul disco viene sostituito solo dopo che il nuovo è stato scritto e verificato.
+            «Salta questi»: i file già presenti restano come sono e non vengono copiati.
+            """
+            ask.addButton(withTitle: "Sostituisci")
+            ask.addButton(withTitle: "Salta questi")
+            ask.addButton(withTitle: "Annulla")
+            switch ask.runModal() {
+            case .alertFirstButtonReturn:
+                for index in scan.existing { plan.entries[index].replace = true }
+            case .alertSecondButtonReturn:
+                let skip = Set(scan.existing)
+                plan.entries = plan.entries.enumerated().filter { !skip.contains($0.offset) }.map(\.element)
+            default:
                 return
             }
         }
+        guard !plan.entries.isEmpty || !plan.folders.isEmpty else {
+            message = "Niente da copiare: tutti i file sono già sul disco."
+            return
+        }
         let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: plan.totalBytes), countStyle: .file)
+        var what = "\(plan.entries.count) file"
+        if !plan.folders.isEmpty { what += " in \(plan.folders.count) cartelle" }
         let confirm = NSAlert()
-        confirm.messageText = "Copiare \(names.count) file (\(size)) su «\(record.name)»?"
-        confirm.informativeText = """
-        Destinazione: \(plan.destinationLabel).
-        OpenHDD aggiunge solo file nuovi: non modifica né cancella quelli presenti. Durante la copia il disco viene smontato; alla fine ogni file viene riletto e confrontato con l'originale.
-        Non scollegare il disco finché non compare «Copia completata». Se la copia si interrompe, i file già presenti restano intatti, ma il disco andrà controllato su Windows con «chkdsk X: /f».
+        confirm.messageText = "Copiare \(what) (\(size)) su «\(record.name)»?"
+        var details = "Destinazione: \(plan.destinationLabel)."
+        if plan.replacedCount > 0 {
+            details += "\n\(plan.replacedCount) file già presenti verranno sostituiti."
+        }
+        if !scan.skipped.isEmpty {
+            details += "\nNon copiati (link simbolici o file speciali): \(scan.skipped.count)."
+        }
+        confirm.informativeText = details + """
+
+
+        Ogni file viene riletto dal disco e confrontato con l'originale. Durante la copia il disco viene smontato.
+        Non scollegare il disco finché non compare «Copia completata». Se la copia si interrompe, il disco andrà controllato su Windows con «chkdsk X: /f»; i file già presenti restano intatti.
         """
         confirm.addButton(withTitle: "Copia")
         confirm.addButton(withTitle: "Annulla")
@@ -657,6 +721,18 @@ extension DiskStore {
                                  initial: old), name != old else { return }
         run(EditRequest(partition: record.bsdName, volumeName: record.name,
                         kind: .rename(path, to: name)), record: record)
+    }
+
+    func beginMove() {
+        guard let record = currentSelection(), canEdit(record),
+              let paths = pickOnVolume(record, title: "Elementi da spostare su «\(record.name)»",
+                                       prompt: "Avanti", files: true, folders: true,
+                                       multiple: true),
+              let destination = pickOnVolume(record, title: "Sposta in quale cartella di «\(record.name)»?",
+                                             prompt: "Sposta qui", files: false, folders: true,
+                                             multiple: false, allowRoot: true)?.first else { return }
+        run(EditRequest(partition: record.bsdName, volumeName: record.name,
+                        kind: .move(paths, to: destination)), record: record)
     }
 
     func beginNewFolder() {
@@ -801,8 +877,14 @@ private struct ContentView: View {
                     }
                     .tag(disk.id)
                     .id("\(disk.bsdName)|\(store.state(for: disk))")
+                    #if OPENHDD_LOCAL
+                    .onDrop(of: [.fileURL], isTargeted: nil) { store.drop($0, on: disk) }
+                    #endif
                 }
             }
+            #if OPENHDD_LOCAL
+            .onDrop(of: [.fileURL], isTargeted: nil) { store.drop($0, on: nil) }
+            #endif
             #if OPENHDD_LOCAL
             if let progress = store.copyProgress {
                 VStack(alignment: .leading, spacing: 4) {
@@ -834,6 +916,7 @@ private struct ContentView: View {
                 Menu("Modifica") {
                     Button("Nuova cartella…") { store.beginNewFolder() }
                     Button("Rinomina…") { store.beginRename() }
+                    Button("Sposta…") { store.beginMove() }
                     Divider()
                     Button("Elimina…", role: .destructive) { store.beginDelete() }
                 }

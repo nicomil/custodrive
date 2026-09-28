@@ -150,6 +150,94 @@ volume sano, `chkdsk` in sola lettura senza errori e file preesistenti con
 hash invariato. Per restituire il disco al Mac si usa
 `Tests/windows/eject-usb.ps1 -Label ETICHETTA` (rimozione sicura vera).
 
+## v3 — cartelle intere, sostituzione, spostamento, drag & drop
+
+**Cartelle.** La copia riceve un elenco (`--manifest`, campi separati da NUL)
+di cartelle da creare e di file, ciascuno con la propria cartella di
+destinazione. Nella fase 2, dopo il dirty bit, vengono create le cartelle
+mancanti, genitori prima dei figli; quelle esistenti vengono unite. Poi
+scrittura, verifica, pubblicazione e completamento come nella v1, con la
+cartella risolta file per file. Le cartelle vengono risolte senza mai
+attraversare junction o link. Nomi che differiscono solo per le maiuscole
+nella stessa cartella vengono rifiutati prima di scrivere.
+
+**Lotti.** La CLI divide le copie grandi in lotti da al massimo 1000 file o
+8 GB. Ogni lotto è una sessione completa: dirty bit, verifica, volume pulito.
+L'avanzamento viene rimappato su un totale unico, per una sola barra e un
+solo tempo stimato. Il limite dei file aperti viene alzato all'avvio.
+
+**Sostituzione.** Il file nuovo viene scritto e verificato sotto un nome
+temporaneo. Poi:
+1. il diario `.OpenHDD-journal` (cartella, nome temporaneo del vecchio, nome
+   finale) viene scritto, sincronizzato e riletto;
+2. il vecchio file viene rinominato `.OpenHDD-old-<hex>` nella sua cartella;
+3. il nuovo prende il nome;
+4. i nomi temporanei e il vecchio file vengono rimossi;
+5. il diario viene eliminato in una sessione separata.
+
+Dopo un'interruzione e `chkdsk`, la sessione successiva applica il diario:
+- nome finale presente: il vecchio viene eliminato;
+- nome finale assente: il vecchio riprende il nome.
+
+| Punto d'interruzione | Sotto il nome, dopo `chkdsk` e ripresa |
+|---|---|
+| prima del diario | file vecchio |
+| vecchio messo da parte, nuovo non collegato | file vecchio (ripristinato dal diario) |
+| nuovo pubblicato | file nuovo (il vecchio viene eliminato) |
+
+**Spostamento.** Aggiunta del nome nella cartella di destinazione, poi
+rimozione del vecchio: NTFS tiene il genitore in ogni nome, quindi una
+cartella si sposta con tutto il contenuto. Vengono rifiutati:
+- lo spostamento di una cartella dentro se stessa;
+- lo spostamento nella stessa cartella;
+- un nome già presente nella destinazione;
+- elementi che si contengono a vicenda nella stessa richiesta;
+- elementi protetti o speciali.
+
+**Collaudo su immagini.**
+- `Tests/run-v3-probe.sh`: cartelle annidate, vuote e unite, rifiuti a
+  immagine invariata, lotti con una sola barra, sostituzione con recupero
+  dal diario a ogni punto d'interruzione, spostamenti. **PASS**.
+- `OPENHDD_CAMPAIGN_EDIT=move|tree|replace Tests/run-powercut-campaign.sh`:
+  tagli a ogni scrittura, 4 semi, strappi a 512 B e 4 KiB. **0 violazioni.**
+  Per la sostituzione, ogni immagine riparabile con `ntfsfix` viene ripresa
+  dalla sessione successiva: nei 101 casi recuperati il nome contiene
+  sempre il file vecchio o quello nuovo, senza residui.
+
+**Collaudo su Windows** (`Tests/prepare-windows-v3-cases.sh` +
+`verify-v1-cases.ps1`, 28 settembre 2026): **47/47 PASS**.
+- **Copie completate**: una cartella con unione in una cartella creata da
+  Windows, la sostituzione di file creati da Windows e lo spostamento di una
+  cartella e di un file di Windows danno `chkdsk` pulito.
+- **Interruzioni e 38 tagli di corrente**: `chkdsk /f` ripara, e il secondo
+  `chkdsk` è pulito.
+- **Contenuti**: il contenuto vecchio o quello nuovo di ogni file sostituito
+  sopravvive sempre, e i file di Windows non coinvolti restano intatti.
+
+Un primo giro aveva segnato 7 falsi allarmi. Il test pretendeva il contenuto
+vecchio anche dopo la pubblicazione, quando il motore lo elimina di proposito.
+Corretta l'attesa ("vecchio o nuovo"), i 18 casi di sostituzione passano tutti.
+
+**Giro completo Windows → Mac.** Due immagini riparate da Windows sono
+tornate sul Mac, e la sessione successiva di OpenHDD ha applicato il diario:
+- interruzione con il vecchio file messo da parte: `old.bin` torna il vecchio;
+- interruzione dopo la pubblicazione: `old.bin` resta il nuovo.
+
+In entrambi i casi non restano residui `.OpenHDD` e il volume è pulito.
+
+**Disco reale** (chiavetta OPENHDD-V4, 28 settembre 2026). Dall'app:
+- una cartella di 322 MB con sottocartelle, una cartella vuota e nomi
+  accentati, copiata trascinandola dal Finder;
+- la stessa cartella trascinata di nuovo, con **Sostituisci**;
+- lo spostamento della cartella intera in `Documenti`.
+
+Il Mac trova gli hash corretti. Windows trova il volume sano, `chkdsk` pulito,
+12/12 hash identici e nessun residuo OpenHDD.
+
+**Scoperta durante il collaudo.** Su macOS NTFS-3G restituisce i nomi degli
+elenchi in forma decomposta (NFD). I confronti di nomi del motore ora
+avvengono in forma canonica.
+
 ## Fase 2
 
 La specifica transazionale e il laboratorio `$LogFile` (`Tests/windows/*journal*`,
