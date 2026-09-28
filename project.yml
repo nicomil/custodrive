@@ -16,6 +16,7 @@ targets:
     platform: macOS
     sources:
       - path: Sources/OpenHDDApp/OpenHDDApp.swift
+      - path: Sources/OpenHDDApp/NTFSCopy.swift
       - path: Sources/Shared/DiskHelperProtocol.swift
     info:
       path: Sources/OpenHDDApp/InfoLocal.plist
@@ -28,6 +29,19 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: it.openhdd.local
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) OPENHDD_LOCAL
+    postBuildScripts:
+      - name: Embed OpenHDDCopy
+        # Every build product must carry the copy engine, not only the
+        # bundle assembled by Scripts/build-local-app.sh.
+        script: |
+          set -eu
+          PROJECT_DIR="$PROJECT_DIR" "$PROJECT_DIR/Scripts/build-copy-tool.sh"
+          install -d "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+          install -m 755 "$PROJECT_DIR/Build/OpenHDDCopy" \
+            "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/OpenHDDCopy"
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OpenHDDCopy
+        basedOnDependencyAnalysis: false
   OpenHDD:
     type: application
     platform: macOS

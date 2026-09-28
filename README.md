@@ -1,25 +1,107 @@
-# OpenHDD — lettura gratuita e ricerca sulla scrittura NTFS
+# OpenHDD — lettura e copia sicura di file su NTFS dal Mac
 
-**OpenHDD Local** è la build gratuita utilizzabile senza team Apple Developer. Usa il driver macOS per leggere NTFS nel Finder, monta esplicitamente in sola lettura e permette l'espulsione normale. Per APFS/exFAT/FAT/HFS usa macOS. Non scrive su NTFS. Per il percorso verso la scrittura vedere [docs/percorso-senza-abbonamento.md](docs/percorso-senza-abbonamento.md).
+**OpenHDD Local** è l'app gratuita, senza abbonamento Apple Developer, per dischi
+NTFS esterni su Mac Apple Silicon (macOS 15.4 o successivo). Legge NTFS con il
+driver di macOS, in sola lettura, e **copia file nuovi sul disco NTFS** con
+verifica completa. Per APFS/exFAT/FAT/HFS usa macOS.
 
 ```sh
 Scripts/build-local-app.sh
 open Build/OpenHDDLocal.app
 ```
 
-Il risultato è in `Build/OpenHDDLocal.app`, firmato localmente ad hoc. Non richiede l'estensione FSKit di OpenHDD né una quota annuale Apple. In caso di disco NTFS già montato, l'app controlla che il mount sia davvero read-only prima di aprire Finder. Per espellere, smonta normalmente tutti i volumi del dispositivo e chiede l'eject; non usa l'opzione force.
+## Copiare file su un disco NTFS
 
-**Prova runtime su macOS 27:** immagine GPT/NTFS sacrificabile da 128 MiB collegata in sola lettura; rilevata come partizione esterna, montata da OpenHDD Local in `/Volumes/OpenHDDTest` con flag `read-only`, file ASCII e Unicode letti, espulsione riuscita, hash SHA-256 dell'immagine invariato. La prova non dimostra compatibilità su un M1/macOS 15.4 né su un dispositivo fisico.
+1. Collega il disco e selezionalo nell'elenco.
+2. Premi **Copia sul disco…**, scegli uno o più file e la destinazione: la
+   cartella principale o una cartella esistente del disco.
+3. Conferma. Per una chiavetta o un disco USB macOS chiede la password di
+   amministratore, solo per questa operazione.
+4. Attendi il messaggio **«Copia completata e verificata»**: il disco torna
+   montato in sola lettura e i file nuovi sono visibili nel Finder. Poi usa
+   **Espelli** prima di scollegarlo.
 
-**Scrittura NTFS non abilitata nell'app.** `Tests/run-offline-write-probe.sh` verifica un precedente motore sperimentale solo su immagini: copia di file grande, Unicode e vuoto con confronto SHA-256; rifiuto di duplicati, dirty, ibernazione simulata e non NTFS; errore iniettato senza falso successo. Il vecchio motore non deve essere usato su dispositivi fisici.
+Cosa garantisce la copia ([piano v1](docs/piano-scrittura-v1.md)):
 
-Il nuovo `Build/OpenHDDCopy` è un programma **sperimentale per la prova fisica controllata**. Usa un descrittore del disco aperto in modo esclusivo, Disk Arbitration per smontaggio e possesso esclusivo, crea un nome temporaneo, verifica SHA-256 prima e dopo la pubblicazione e tenta l'espulsione normale. Test su immagini: `Tests/run-direct-copy-probe.sh`. Procedura e risultati USB: [docs/prova-copia-ntfs.md](docs/prova-copia-ntfs.md). Sulla Kingston da 16 GB le copie da 8 e 128 MiB avevano hash corretti su Mac e, secondo l'utente, su Windows con `chkdsk` senza errori; successive letture hanno però prodotto errori I/O, quindi la Kingston è stata ritirata. `certutil` fallisce con 1006 anche per un file vuoto locale Windows e non è un controllo utile in questo ambiente. I test su immagini iniettano errori di lettura, scrittura, sync e spazio esaurito; il binario dei test non accetta dischi fisici. L'app resta in sola lettura; il programma non è validato per dati importanti.
+- **Aggiunge solo file nuovi.** Non sovrascrive, non cancella e non rinomina
+  file esistenti. Un nome già presente viene rifiutato, senza distinguere
+  maiuscole e minuscole, come fa Windows. Anche i nomi che Windows non accetta
+  (`: * ? " < > |`, `CON`, punto finale…) vengono rifiutati prima di scrivere.
+- **Nessun falso successo.** Il successo compare solo dopo la sincronizzazione
+  del disco e la rilettura di ogni file con confronto SHA-256.
+- **Un'interruzione è sempre riparabile da Windows.** Prima di qualunque
+  modifica il volume viene marcato "da controllare" (dirty bit NTFS). Il segno
+  viene tolto solo alla fine. Se il disco viene scollegato o il Mac si spegne
+  durante la copia, OpenHDD rifiuta nuove scritture su quel disco. Windows lo
+  segnala come da controllare, e `chkdsk X: /f` lo riporta coerente. I file già
+  presenti restano intatti; si perde al massimo il file in copia. Alla copia
+  successiva OpenHDD rimuove da solo i propri file temporanei rimasti.
+- **Niente scrittura su volumi a rischio.** Dischi con Windows in
+  ibernazione/Avvio rapido, journal non pulito o già da controllare vengono
+  rifiutati con il motivo.
 
-La versione corrente del motore rifiuta ogni temporaneo `.OpenHDD-pending-...` ed elimina il nome temporaneo solo dopo pubblicazione e verifica riuscite. Ha superato i test su immagini private, inclusi I/O parziali e arresti ai confini della pubblicazione. Sulla USB sacrificabile `OPENHDDLAB`, dopo formattazione NTFS da Windows, ha copiato file da 0, 1 e 65 byte, 8 MiB e 128 MiB: il Mac li ha riletti in sola lettura con hash corrispondenti e senza temporanei. L'utente riferisce `chkdsk` senza errori e hash Windows corrispondenti per tutti e cinque. **La successiva prova di scollegamento durante una copia da 2 GiB ha rilevato errori NTFS con `chkdsk` su Windows.** Il programma ha segnalato errore e non `PASS`, ma il criterio di integrità non è soddisfatto: la scrittura diretta resta sperimentale e assente dall'app. La sezione seguente descrive l'originaria variante FSKit, ancora non attivabile senza firma idonea.
+Se compare «Copia non completata: controlla il disco su Windows»: collega il
+disco a un PC Windows, apri il Prompt dei comandi come amministratore ed esegui
+`chkdsk X: /f`, dove X è la lettera del disco. Poi puoi tornare a usarlo con
+OpenHDD.
+
+Fuori da questa versione: sovrascrivere, cancellare o rinominare file,
+scrivere dal Finder, creare cartelle, file compressi o cifrati.
+
+### Da riga di comando
+
+Il motore dell'app è `Build/OpenHDDCopy` (anche in
+`OpenHDDLocal.app/Contents/Resources/`):
+
+```sh
+sudo Build/OpenHDDCopy --disk disk4s1 [--dir "Cartella/Sotto"] FILE1 "Nome 1" FILE2 "Nome 2"
+sudo Build/OpenHDDCopy --check-disk disk4s1        # controllo in sola lettura
+```
+
+## Collaudo della scrittura
+
+| Gate | Prova | Esito (28 settembre 2026) |
+|---|---|---|
+| V1 | `Tests/run-direct-copy-probe.sh`: dirty bit a ogni confine, crash, errori I/O, disco pieno, batch, nomi Unicode e NFD→NFC, cartelle, duplicati senza distinzione maiuscole, pulizia dei temporanei | PASS |
+| V1 | `Tests/run-powercut-campaign.sh`: taglio di corrente con cache volatile a **ogni** scrittura di una copia, 4 semi, strappi a 512 B e 4 KiB (680 casi) | PASS: 0 volumi "puliti ma alterati" |
+| V2 | `Tests/prepare-windows-v1-cases.sh` + `Tests/windows/verify-v1-cases.ps1` su una base formattata da Windows 11 (build 26200): copia completata, 3 interruzioni a stadi precisi, 18 tagli di corrente | **22/22 PASS**: copia completata con `chkdsk` pulito; ogni interruzione riparata da `chkdsk /f`, secondo `chkdsk` pulito, file preesistenti intatti al loro posto |
+| V3 | Copia su un disco collegato a macOS (`hdiutil`) con la CLI e **dall'interfaccia dell'app** (selezione disco, scelta file, destinazione, conferma), rimontaggio in sola lettura, poi verifica su Windows | PASS: `chkdsk` pulito, hash corretti |
+| V4 | Chiavetta USB sacrificabile: copie normali e scollegamento durante una copia, poi Windows | **da eseguire** (checklist sotto) |
+
+I test su immagini non sostituiscono il collaudo sull'hardware reale: il
+controller USB può riordinare o perdere scritture in modi che il simulatore non
+riproduce.
+
+### Checklist V4 (USB sacrificabile)
+
+1. Formatta la chiavetta NTFS su Windows, aggiungi alcuni file e annota gli
+   hash (`Get-FileHash`). Espelli.
+2. Sul Mac copia con OpenHDD un file piccolo e uno da qualche GiB. Controlla gli
+   hash nel Finder o con `shasum -a 256`. Su Windows: `chkdsk X:` deve essere
+   pulito e gli hash devono coincidere.
+3. Avvia una copia da qualche GiB e scollega la chiavetta a metà. L'app deve
+   dire «Copia non completata». Su Windows il disco deve risultare da
+   controllare (`fsutil dirty query X:`). `chkdsk X: /f`, poi `chkdsk X:`
+   pulito; i file iniziali devono avere gli stessi hash.
+4. Ricollega al Mac e copia un altro file: OpenHDD deve rimuovere il temporaneo
+   rimasto e completare la copia.
+
+## Storia e ricerca
+
+La prima prova di scollegamento del 27 settembre, con il vecchio motore senza
+dirty bit, aveva lasciato `$Bitmap` incoerente senza che Windows lo sapesse:
+[analisi forense](docs/analisi-guasto-bitmap-ntfs-2026-09-27.md). La
+[specifica transazionale](docs/specifica-recupero-transazionale-ntfs.md) resta
+come fase 2, per un recupero via journal `$LogFile` senza `chkdsk`, insieme al
+laboratorio in `Tests/windows/` (`verify-journal-recovery.ps1`,
+`acquire-logfile-replay_claude.ps1`, `export-vhd-partition.ps1`) e a
+`Tests/run-journal-probe.sh`. Non blocca la v1.
+
+## Variante FSKit (richiede firma Apple Developer)
 
 App macOS per aprire manualmente partizioni NTFS esterne **in sola lettura**. Target: Apple Silicon, macOS 15.4 o successivo. Questa fase non contiene operazioni NTFS di scrittura, riparazione, replay del journal o formattazione.
 
-## Stato verificato
+### Stato verificato
 
 - Progetto Xcode arm64 compilato con Xcode 27 e deployment target 15.4.
 - NTFS-3G 2026.7.7 verificato contro archivio upstream e compilato come libreria statica. Provenienza e licenza: [vendor/README.md](vendor/README.md).
@@ -28,7 +110,7 @@ App macOS per aprire manualmente partizioni NTFS esterne **in sola lettura**. Ta
 - La firma di sviluppo è bloccata su questo Mac: il portachiavi non contiene identità valide e l'account Apple Developer mostra l'iscrizione al programma scaduta. La [tabella Apple per macOS](https://developer.apple.com/help/account/reference/supported-capabilities-macos) indica FSKit Module per Apple Developer Program e Developer ID, non per Apple Developer gratuito. Nessuna estensione è stata attivata.
 - **Non ancora validato su FSKit/Finder né su disco fisico.** Non usare con dati insostituibili finché la matrice sotto non è completata.
 
-## Struttura
+### Struttura
 
 - `Sources/OpenHDDApp`: finestra SwiftUI e inventario Disk Arbitration. Nessun mount automatico.
 - `Sources/NTFSExtension`: estensione FSKit. Accetta il caricamento solo con opzione read-only; tutte le operazioni di modifica restituiscono `EROFS`.
@@ -36,7 +118,7 @@ App macOS per aprire manualmente partizioni NTFS esterne **in sola lettura**. Ta
 - `Sources/DiskHelper`: helper privilegiato limitato a mount NTFS read-only, unmount del proprio mount ed eject. Rivalida partizione, dimensione e identità del dispositivo. Non accetta percorsi o comandi arbitrari.
 - `Tests`: prova automatica dell'adattatore su immagine temporanea; non tocca dischi esterni.
 
-## Build
+### Build
 
 Prerequisiti: Xcode completo, XcodeGen, certificato e team di sviluppo compatibili con entitlement FSKit. La [matrice Apple](https://developer.apple.com/help/account/reference/supported-capabilities-macos) non include FSKit nel profilo gratuito; occorre una firma idonea prima delle prove runtime. Firma app, estensione e helper con lo stesso Team ID. L'estensione richiede l'entitlement `com.apple.developer.fskit.fsmodule`. Non rimuovere l'entitlement né abbassare la sicurezza di avvio per aggirare una firma mancante.
 
@@ -52,13 +134,13 @@ Tests/create-runtime-fixture.sh Build/runtime-fixture.img
 
 Installare l'app firmata in `/Applications`. In **Impostazioni di sistema > Generali > Elementi login ed estensioni > Estensioni file system**, attivare OpenHDD NTFS. Alla prima richiesta, approvare anche l'helper OpenHDD. La build senza firma serve solo al controllo del codice e **non** abilita FSKit.
 
-## Uso previsto
+### Uso previsto
 
 Selezionare una partizione esterna. Per NTFS, premere **Apri in sola lettura**: l'helper esegue una verifica strutturale limitata, smonta normalmente un eventuale mount macOS, poi chiede il mount FSKit read-only. Se il mount fallisce, prova a ripristinare quello macOS in sola lettura e mostra l'esito. Con il volume montato, usare **Apri nel Finder** e poi **Espelli**. Per APFS/exFAT/FAT/HFS, il mount rimane affidato a macOS.
 
 Dirty bit, sospetto journal e stato di ibernazione incerto producono avvisi: il controllo non è una riparazione né un fsck completo. File NTFS cifrati e reparse point non sono letti dall'adattatore.
 
-## Prove necessarie prima di dichiarare conclusa la fase 1
+### Prove necessarie prima di dichiarare conclusa la fase 1
 
 Usare **solo immagini e unità sacrificabili**. Registrare per ogni prova sistema, Mac, build, hash prima/dopo, stato del mount ed esito osservato.
 

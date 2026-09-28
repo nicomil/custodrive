@@ -162,6 +162,8 @@ final class DiskStore: ObservableObject {
     @Published var selected: String?
     @Published var message: String = "Seleziona una partizione esterna. Nessuna operazione automatica."
     @Published var busy = false
+    @Published var copyProgress: Double?
+    @Published var copyTitle = ""
     @Published private var statusOverrides: [String: String] = [:]
 
     private let session: DASession
@@ -460,6 +462,168 @@ final class DiskStore: ObservableObject {
     #endif
 }
 
+#if OPENHDD_LOCAL
+extension DiskStore {
+    func canCopy(_ record: DiskRecord?) -> Bool {
+        guard let record else { return false }
+        return record.isNTFS && record.isExternal && !busy
+    }
+
+    /// Asks for files and a destination, confirms, then runs the copy.
+    func beginCopy() {
+        guard let record = currentSelection(), record.isNTFS else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Scegli i file da copiare su «\(record.name)»"
+        panel.prompt = "Avanti"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let sources = panel.urls
+
+        var names: [String] = []
+        var sizes: [UInt64] = []
+        var problems: [String] = []
+        for url in sources {
+            let name = NTFSCopyRunner.normalized(url.lastPathComponent)
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
+            if values?.isRegularFile != true || values?.isSymbolicLink == true {
+                problems.append("«\(name)»: non è un file normale")
+            } else if let problem = NTFSCopyRunner.problem(withName: name) {
+                problems.append("«\(name)»: \(problem)")
+            }
+            if names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                problems.append("«\(name)»: scelto due volte")
+            }
+            names.append(name)
+            sizes.append(UInt64(values?.fileSize ?? 0))
+        }
+        guard problems.isEmpty else {
+            alert("Alcuni file non possono essere copiati così", problems.joined(separator: "\n") +
+                  "\n\nRinominali sul Mac e riprova.")
+            return
+        }
+
+        guard let directory = chooseDestination(record) else { return }
+        let plan = CopyPlan(partition: record.bsdName, volumeName: record.name,
+                            sources: sources, names: names, sizes: sizes,
+                            directory: directory.isEmpty ? nil : directory)
+        if let mount = record.mountURL {
+            let folder = directory.isEmpty ? mount : mount.appendingPathComponent(directory)
+            let clashes = names.filter { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
+            if !clashes.isEmpty {
+                alert("File già presenti", "Nella destinazione esistono già: " + clashes.joined(separator: ", ") +
+                      ".\nOpenHDD non sovrascrive file esistenti.")
+                return
+            }
+        }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: plan.totalBytes), countStyle: .file)
+        let confirm = NSAlert()
+        confirm.messageText = "Copiare \(names.count) file (\(size)) su «\(record.name)»?"
+        confirm.informativeText = """
+        Destinazione: \(plan.destinationLabel).
+        OpenHDD aggiunge solo file nuovi: non modifica né cancella quelli presenti. Durante la copia il disco viene smontato; alla fine ogni file viene riletto e confrontato con l'originale.
+        Non scollegare il disco finché non compare «Copia completata». Se la copia si interrompe, i file già presenti restano intatti, ma il disco andrà controllato su Windows con «chkdsk X: /f».
+        """
+        confirm.addButton(withTitle: "Copia")
+        confirm.addButton(withTitle: "Annulla")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        run(plan, record: record)
+    }
+
+    /// Returns "" for the root, a relative path for a folder, nil if cancelled.
+    private func chooseDestination(_ record: DiskRecord) -> String? {
+        guard let mount = record.mountURL else { return "" }
+        let ask = NSAlert()
+        ask.messageText = "Dove copiare i file su «\(record.name)»?"
+        ask.addButton(withTitle: "Cartella principale")
+        ask.addButton(withTitle: "Scegli cartella…")
+        ask.addButton(withTitle: "Annulla")
+        switch ask.runModal() {
+        case .alertFirstButtonReturn: return ""
+        case .alertSecondButtonReturn: break
+        default: return nil
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Cartella di destinazione su «\(record.name)»"
+        panel.prompt = "Scegli"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.directoryURL = mount
+        guard panel.runModal() == .OK, let chosen = panel.url?.standardizedFileURL else { return nil }
+        let root = mount.standardizedFileURL.path
+        let path = chosen.path
+        guard path == root || path.hasPrefix(root + "/") else {
+            alert("Cartella non valida", "Scegli una cartella che si trova sul disco «\(record.name)».")
+            return nil
+        }
+        return NTFSCopyRunner.normalized(String(path.dropFirst(root.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+    }
+
+    private func run(_ plan: CopyPlan, record: DiskRecord) {
+        let progressFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openhdd-progress-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: progressFile.path, contents: nil,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            message = "Impossibile preparare la copia."
+            return
+        }
+        busy = true
+        copyProgress = 0
+        copyTitle = "Copia su «\(plan.volumeName)»"
+        statusOverrides[record.bsdName] = "Trasferimento in corso"
+        message = NTFSCopyRunner.needsAdministrator(plan.partition) ?
+            "macOS chiederà la password di amministratore per scrivere sul disco." :
+            "Copia in corso…"
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if let value = NTFSCopyRunner.readProgress(progressFile, plan: plan) {
+                    self?.copyProgress = value
+                    self?.message = value < 1 ? "Copia in corso… non scollegare il disco." :
+                        "Verifica e chiusura in corso… non scollegare il disco."
+                }
+            }
+        }
+        Task.detached { [store = self] in
+            let outcome = NTFSCopyRunner.run(plan, progressFile: progressFile)
+            try? FileManager.default.removeItem(at: progressFile)
+            await MainActor.run {
+                timer.invalidate()
+                store.finishCopy(outcome, record: record)
+            }
+        }
+    }
+
+    private func finishCopy(_ outcome: CopyOutcome, record: DiskRecord) {
+        busy = false
+        copyProgress = nil
+        switch outcome {
+        case .success(let text):
+            statusOverrides.removeValue(forKey: record.bsdName)
+            message = text
+        case .cancelled:
+            statusOverrides.removeValue(forKey: record.bsdName)
+            message = "Copia annullata: nessuna modifica al disco."
+        case .failure(let text, let needsWindowsCheck):
+            statusOverrides[record.bsdName] = needsWindowsCheck ? "Verifica necessaria" : "Non scritto"
+            message = text
+            alert(needsWindowsCheck ? "Copia non completata: controlla il disco su Windows" : "Copia non eseguita", text)
+        }
+        if let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, record.bsdName) {
+            refresh(disk)
+        }
+    }
+
+    private func alert(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.runModal()
+    }
+}
+#endif
+
 private struct ContentView: View {
     @ObservedObject var store: DiskStore
 
@@ -471,7 +635,7 @@ private struct ContentView: View {
             Text("OpenHDD").font(.largeTitle.bold())
             #endif
             #if OPENHDD_LOCAL
-            Text("Lettura NTFS tramite macOS. Scrittura NTFS ancora in collaudo.")
+            Text("Lettura NTFS tramite macOS. Copia di file nuovi su NTFS con verifica.")
                 .foregroundStyle(.secondary)
             #else
             Text("NTFS in sola lettura. Selezione e montaggio manuali.")
@@ -492,7 +656,13 @@ private struct ContentView: View {
                     .tag(disk.id)
                 }
             }
+            #if OPENHDD_LOCAL
+            if let progress = store.copyProgress {
+                ProgressView(value: progress) { Text(store.copyTitle).font(.callout) }
+            }
+            #endif
             Text(store.message).font(.callout).foregroundStyle(.secondary)
+                .textSelection(.enabled)
             HStack {
                 Button("Apri in sola lettura") { store.requestReadOnlyMount() }
                     #if OPENHDD_LOCAL
@@ -502,6 +672,10 @@ private struct ContentView: View {
                     #endif
                 Button("Apri nel Finder") { store.openInFinder() }
                     .disabled(store.busy || !store.canOpenInFinder(store.currentSelection()))
+                #if OPENHDD_LOCAL
+                Button("Copia sul disco…") { store.beginCopy() }
+                    .disabled(!store.canCopy(store.currentSelection()))
+                #endif
                 Spacer()
                 Button("Espelli") { store.eject() }
                     .disabled(store.busy || store.currentSelection() == nil)

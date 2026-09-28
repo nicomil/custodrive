@@ -10,7 +10,9 @@
 		1065ADD6C22DBDCFD60D6AE8 /* OpenHDDHelper in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1F0C02F0C73B77667623278F /* OpenHDDNTFS.c in Sources */ = {isa = PBXBuildFile; fileRef = 03D229F0D82931616542DA57 /* OpenHDDNTFS.c */; };
 		338C99247438D9A7FAB68AE8 /* OpenHDDNTFS.c in Sources */ = {isa = PBXBuildFile; fileRef = 03D229F0D82931616542DA57 /* OpenHDDNTFS.c */; };
+		400585A1853FE3CFB2BF1DC3 /* NTFSCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */; };
 		5286F49315F2A31553D81A37 /* DiskHelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */; };
+		5E154CF4EFB8ADB1862CA425 /* NTFSCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */; };
 		6526313D1341ED3A4F800A47 /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
 		77FDA0A83D02DF7E59AB2101 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DB571EF6AFBA8AECD59611 /* NTFSFileSystem.swift */; };
 		8FE19B2FFC9ADF50FE9D7145 /* InfoLocal.plist in Resources */ = {isa = PBXBuildFile; fileRef = 7314169618686C21A0C8D68B /* InfoLocal.plist */; };
@@ -107,6 +109,7 @@
 		7CE88E52AC4C768C1ACEB742 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8853BC9AA2BA658E4ABB38CF /* it.openhdd.app.helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = it.openhdd.app.helper.plist; sourceTree = "<group>"; };
 		9F758E50E0EC76566220DB52 /* OpenHDDLocal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHDDLocal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSCopy.swift; sourceTree = "<group>"; };
 		F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskHelperMain.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -190,6 +193,7 @@
 				00EB2874E444E83AEC55463D /* HelperClient.swift */,
 				7CE88E52AC4C768C1ACEB742 /* Info.plist */,
 				7314169618686C21A0C8D68B /* InfoLocal.plist */,
+				CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */,
 				3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */,
 			);
 			name = OpenHDDApp;
@@ -233,6 +237,7 @@
 			buildConfigurationList = B2EEDF4574308B8BC0585A59 /* Build configuration list for PBXNativeTarget "OpenHDDLocal" */;
 			buildPhases = (
 				3E50A83A240900DE6FC6CE6D /* Sources */,
+				12E5C699F2F5DE020997A73A /* Embed OpenHDDCopy */,
 			);
 			buildRules = (
 			);
@@ -364,6 +369,29 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		12E5C699F2F5DE020997A73A /* Embed OpenHDDCopy */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed OpenHDDCopy";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OpenHDDCopy",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nPROJECT_DIR=\"$PROJECT_DIR\" \"$PROJECT_DIR/Scripts/build-copy-tool.sh\"\ninstall -d \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\ninstall -m 755 \"$PROJECT_DIR/Build/OpenHDDCopy\" \\\n  \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/OpenHDDCopy\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		2C9110632D41AE88E5D5CCE8 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -371,6 +399,7 @@
 			files = (
 				6526313D1341ED3A4F800A47 /* DiskHelperProtocol.swift in Sources */,
 				E268221B1ABE182989872A5F /* HelperClient.swift in Sources */,
+				400585A1853FE3CFB2BF1DC3 /* NTFSCopy.swift in Sources */,
 				9A436C837BBE6D91BA64C3C5 /* OpenHDDApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -380,6 +409,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9F9477FCD661D11C93F0548E /* DiskHelperProtocol.swift in Sources */,
+				5E154CF4EFB8ADB1862CA425 /* NTFSCopy.swift in Sources */,
 				E634B114F319111FF4BE74CE /* OpenHDDApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

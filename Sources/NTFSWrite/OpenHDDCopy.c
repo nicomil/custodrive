@@ -19,7 +19,26 @@
 
 /* A local marker survives process death even if NTFS lost its pending name
    during the last metadata sync. It is cleared only after normal eject. */
-static const char *quarantine_path = "/private/var/db/openhdd";
+static char quarantine_path[1024] = "/private/var/db/openhdd";
+static char quarantine_parent[1024] = "/private/var/db";
+
+/* Root keeps markers system-wide. An unprivileged run can only reach devices
+   the user owns (for example an attached disk image) and keeps them in the
+   user's Library. */
+static int select_quarantine_path(void)
+{
+    if (geteuid() == 0) return 0;
+    const char *home = getenv("HOME");
+    struct stat state;
+    if (!home || *home != '/' ||
+        snprintf(quarantine_parent, sizeof(quarantine_parent),
+                 "%s/Library/Application Support", home) >= (int)sizeof(quarantine_parent) ||
+        snprintf(quarantine_path, sizeof(quarantine_path),
+                 "%s/OpenHDD-markers", quarantine_parent) >= (int)sizeof(quarantine_path) ||
+        lstat(quarantine_parent, &state) || !S_ISDIR(state.st_mode) ||
+        state.st_uid != geteuid()) return -1;
+    return 0;
+}
 
 static int quarantine_name(int device, uint64_t size, char *name, size_t length)
 {
@@ -52,7 +71,7 @@ static int quarantine_directory(int create)
         return -1;
     }
     if (made_directory) {
-        int parent = open("/private/var/db",
+        int parent = open(quarantine_parent,
                           O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         int synced = parent >= 0 && !fsync(parent);
         if (parent >= 0) close(parent);
@@ -322,98 +341,264 @@ static int display_value(DADiskRef disk, CFStringRef key,
     return 0;
 }
 
-static int confirm_disk(DiskLease *lease, const char *name)
+
+typedef struct {
+    const char *target;          /* image path or partition name */
+    const char *directory;       /* NFC, or NULL for the root */
+    const char *progress_path;
+    int assume_confirmed;
+    int eject;
+    long owner_uid;              /* -1 when unknown */
+    size_t count;
+    const char **sources;
+    char **names;                /* NFC copies owned by the request */
+} CopyRequest;
+
+typedef struct {
+    int fd;
+    size_t count;
+} ProgressFile;
+
+static int confirm_disk(DiskLease *lease, const char *name);
+
+/* Converts a UTF-8 argument to NFC, the form Windows tools expect. */
+static char *normalized_copy(const char *value)
 {
-    if (!isatty(STDIN_FILENO)) return -1;
-    char model[256], volume[256];
-    if (display_value(lease->whole, kDADiskDescriptionDeviceModelKey,
-                      model, sizeof(model)) ||
-        display_value(lease->partition, kDADiskDescriptionVolumeNameKey,
-                      volume, sizeof(volume))) return -1;
-    fprintf(stderr, "External NTFS partition: %s (%llu bytes).\n"
-            "Device: %s; volume: %s.\n"
-            "EXPERIMENTAL: a disconnected test drive developed NTFS bitmap errors.\n"
-            "Only use a disposable drive with a verified backup.\n"
-            "Type COPY %s to continue: ",
-            name, (unsigned long long)lease->size, model, volume, name);
-    char response[64], expected[64];
-    snprintf(expected, sizeof(expected), "COPY %s\n", name);
-    return fgets(response, sizeof(response), stdin) &&
-        !strcmp(response, expected) ? 0 : -1;
+    CFStringRef string = CFStringCreateWithCString(kCFAllocatorDefault, value,
+                                                   kCFStringEncodingUTF8);
+    if (!string) return NULL;
+    CFMutableStringRef normal = CFStringCreateMutableCopy(kCFAllocatorDefault,
+                                                          0, string);
+    CFRelease(string);
+    if (!normal) return NULL;
+    CFStringNormalize(normal, kCFStringNormalizationFormC);
+    CFIndex capacity = CFStringGetMaximumSizeForEncoding(
+        CFStringGetLength(normal), kCFStringEncodingUTF8) + 1;
+    char *out = malloc((size_t)capacity);
+    if (out && !CFStringGetCString(normal, out, capacity, kCFStringEncodingUTF8)) {
+        free(out);
+        out = NULL;
+    }
+    CFRelease(normal);
+    return out;
 }
 
-static int run_image(const char *path, const char *source_path,
-                     const char *name)
+static void request_free(CopyRequest *request)
 {
-    struct stat before, after, source_info;
+    if (request->names)
+        for (size_t i = 0; i < request->count; ++i) free(request->names[i]);
+    free(request->names);
+    free(request->sources);
+    free((char *)request->directory);
+}
+
+static void report_progress(void *opaque, size_t index, uint64_t done,
+                            uint64_t total)
+{
+    ProgressFile *progress = opaque;
+    char line[128];
+    int length = snprintf(line, sizeof(line), "%zu %zu %llu %llu\n", index,
+                          progress->count, (unsigned long long)done,
+                          (unsigned long long)total);
+    if (progress->fd >= 0 && length > 0) {
+        /* The file holds only the latest line; errors are not fatal. */
+        if (pwrite(progress->fd, line, (size_t)length, 0) == length)
+            (void)ftruncate(progress->fd, length);
+    } else if (progress->fd < 0 && done == total && total >= 64ULL * 1024 * 1024) {
+        fprintf(stderr, "File %zu/%zu: %llu MiB written, verifying.\n",
+                index + 1, progress->count,
+                (unsigned long long)(total / (1024 * 1024)));
+    }
+}
+
+/* The progress file is created by the unprivileged caller; refuse anything
+   that could redirect a root write elsewhere. */
+static int open_progress(const char *path, long owner_uid)
+{
+    if (!path) return -1;
+    int fd = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat state;
+    if (fd >= 0 && (fstat(fd, &state) || !S_ISREG(state.st_mode) ||
+                    state.st_nlink != 1 ||
+                    (owner_uid >= 0 && state.st_uid != (uid_t)owner_uid))) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static int open_sources(const CopyRequest *request, long owner_uid,
+                        OHCopyItem *items)
+{
+    for (size_t i = 0; i < request->count; ++i) items[i].source_fd = -1;
+    for (size_t i = 0; i < request->count; ++i) {
+        struct stat state;
+        int fd = open(request->sources[i], O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0 || fstat(fd, &state) || !S_ISREG(state.st_mode) ||
+            (owner_uid >= 0 && state.st_uid != (uid_t)owner_uid &&
+             !(state.st_mode & S_IROTH))) {
+            if (fd >= 0) close(fd);
+            fprintf(stderr, "Refused: source %zu is not a regular file readable "
+                            "by the requesting user.\n", i + 1);
+            return -1;
+        }
+        items[i].source_fd = fd;
+        items[i].destination_name = request->names[i];
+    }
+    return 0;
+}
+
+static void close_sources(OHCopyItem *items, size_t count)
+{
+    for (size_t i = 0; i < count; ++i)
+        if (items[i].source_fd >= 0) close(items[i].source_fd);
+}
+
+static void explain_failure(int code, int stage, size_t index, size_t count,
+                            uint32_t warnings)
+{
+    if (code == EINPROGRESS) {
+        fputs("Refused: unfinished OpenHDD transfer found. Check the volume on "
+              "Windows (chkdsk X: /f); no new copy started.\n", stderr);
+        return;
+    }
+    print_safety_warnings(warnings);
+    if (stage == 1) {
+        if (code == EEXIST)
+            fprintf(stderr, "Refused: a file named like item %zu already exists "
+                            "(names are case-insensitive).\n", index + 1);
+        else if (code == ENOSPC)
+            fputs("Refused: not enough free space for all files plus reserve.\n",
+                  stderr);
+        else if (code == ENOENT || code == ENOTDIR)
+            fputs("Refused: destination folder not found on the volume.\n", stderr);
+        else if (code == EINVAL)
+            fprintf(stderr, "Refused: invalid name or source for item %zu.\n",
+                    index + 1);
+        else if (!warnings && code == EBUSY)
+            fputs("Preflight refused: volume busy or safety state uncertain; "
+                  "no writes started.\n", stderr);
+    }
+    fprintf(stderr, "Copy failed at stage %d; code %d; item %zu of %zu.\n",
+            stage, code, index + 1, count);
+    if (stage >= 2)
+        fputs("The volume is marked for checking. Connect it to Windows and "
+              "run chkdsk X: /f before writing again. Files that existed before "
+              "this copy were not modified.\n", stderr);
+}
+
+static int run_check_image(const char *path)
+{
+    struct stat before;
+    if (lstat(path, &before) || !S_ISREG(before.st_mode)) {
+        fputs("Refused: target must be a regular image.\n", stderr);
+        return 1;
+    }
+    int target = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (target < 0) { perror("open"); return 1; }
+    uint64_t free_bytes = 0;
+    uint32_t warnings = 0;
+    int code = oh_ntfs_safety_preflight(target, (uint64_t)before.st_size,
+                                        &free_bytes, &warnings);
+    close(target);
+    printf("dirty=%d hibernation=%d journal=%d txf=%d pending=%d code=%d free=%llu\n",
+           !!(warnings & OH_NTFS_WARNING_DIRTY),
+           !!(warnings & OH_NTFS_WARNING_HIBERNATED_OR_UNCERTAIN),
+           !!(warnings & OH_NTFS_WARNING_JOURNAL_SUSPECT),
+           !!(warnings & OH_NTFS_WARNING_TXF_REWRITE_RISK),
+           code == EINPROGRESS, code, (unsigned long long)free_bytes);
+    return code ? 1 : 0;
+}
+
+static int run_image(const CopyRequest *request)
+{
+    struct stat before, after;
     int result = 1, stage = 0;
     uint32_t warnings = 0;
+    size_t failed = 0;
+    const char *path = request->target;
+    OHCopyItem *items = calloc(request->count, sizeof(*items));
+    if (!items) return 1;
     if (lstat(path, &before) || !private_image(path, &before)) {
         fputs("Refused: target must be a private regular image.\n", stderr);
+        free(items);
         return 1;
     }
     int target = open(path, O_RDWR | O_EXCL | O_NOFOLLOW | O_CLOEXEC);
-    int source = open(source_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (target < 0 || source < 0 || fstat(target, &after) ||
-        fstat(source, &source_info) || !S_ISREG(source_info.st_mode) ||
+    if (target < 0 || fstat(target, &after) ||
         before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
         before.st_size != after.st_size ||
-        (source_info.st_dev == after.st_dev &&
-         source_info.st_ino == after.st_ino)) {
+        open_sources(request, -1, items)) {
         fputs("Refused: image or source changed.\n", stderr);
         goto out;
     }
-    int code = oh_copy_new_file(target, (uint64_t)after.st_size, 0,
-                                source, name, &stage, &warnings);
-    if (code == EINPROGRESS)
-        fputs("Refused: unfinished OpenHDD transfer found. Inspect image.\n", stderr);
-    else if (code) {
-        print_safety_warnings(warnings);
-        fprintf(stderr, "Copy failed at stage %d; code %d. Inspect image.\n",
-                stage, code);
-    } else result = 0;
+    ProgressFile progress = { .fd = open_progress(request->progress_path, -1),
+                              .count = request->count };
+    size_t removed = 0;
+    int code = oh_copy_new_files(target, (uint64_t)after.st_size, 0,
+                                 request->directory, items, request->count,
+                                 report_progress, &progress, &failed, &stage,
+                                 &warnings, &removed);
+    if (removed)
+        fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
+                        "interrupted copy.\n", removed);
+    if (progress.fd >= 0) close(progress.fd);
+    if (code) explain_failure(code, stage, failed, request->count, warnings);
+    else result = 0;
 out:
-    if (source >= 0) close(source);
+    close_sources(items, request->count);
+    free(items);
     if (target >= 0 && close(target)) {
         fputs("Image close failed; no success reported.\n", stderr);
         result = 1;
     }
-    if (!result) puts("PASS: image copy verified and temporary name removed.");
+    if (!result) printf("PASS: %zu file(s) copied, verified; volume clean.\n",
+                        request->count);
     return result;
 }
 
-static int run_disk(const char *name, const char *source_path,
-                    const char *file_name)
+static int run_disk(const CopyRequest *request)
 {
-    const char *sudo_uid = getenv("SUDO_UID");
-    char *end = NULL;
-    errno = 0;
-    unsigned long invoking_uid = sudo_uid ? strtoul(sudo_uid, &end, 10) : 0;
-    if (geteuid() != 0 || !partition_name(name) || !sudo_uid ||
-        !*sudo_uid || !end || *end || errno || invoking_uid > UINT_MAX) {
-        fputs("Refused: use sudo and a partition name such as disk4s1.\n", stderr);
+    const char *name = request->target;
+    long owner_uid = geteuid() == 0 ? request->owner_uid : (long)getuid();
+    if (!partition_name(name) || owner_uid < 0 || select_quarantine_path()) {
+        fputs("Refused: use a partition name such as disk4s1; as root, also "
+              "give --owner-uid or run through sudo.\n", stderr);
         return 1;
     }
-    int result = 1, stage = 0, target = -1, source = -1;
+    int result = 1, stage = 0, target = -1;
     int quarantine_dir = -1, quarantine_active = 0;
     char quarantine_file[80] = {0};
     uint32_t warnings = 0;
-    int had_mount = 0, unmounted = 0;
+    size_t failed = 0;
+    int had_mount = 0, unmounted = 0, wrote = 0;
+    OHCopyItem *items = calloc(request->count, sizeof(*items));
     DiskLease lease = {0};
+    if (!items) return 1;
+    for (size_t i = 0; i < request->count; ++i) items[i].source_fd = -1;
     lease.session = DASessionCreate(kCFAllocatorDefault);
     if (!lease.session) goto out;
     DASessionScheduleWithRunLoop(lease.session, CFRunLoopGetCurrent(),
                                  kCFRunLoopDefaultMode);
     lease.partition = DADiskCreateFromBSDName(kCFAllocatorDefault,
                                                lease.session, name);
-    if (!lease.partition || inspect_partition(&lease, name, 0)) goto out;
+    if (!lease.partition || inspect_partition(&lease, name, 0)) {
+        fputs("Refused: target is not an external NTFS partition.\n", stderr);
+        goto out;
+    }
     char existing_path[1024];
     had_mount = mounted_path(lease.partition, existing_path,
                              sizeof(existing_path)) == 1;
     lease.whole = DADiskCopyWholeDisk(lease.partition);
-    if (!lease.whole || confirm_disk(&lease, name)) goto out;
+    if (!lease.whole) goto out;
+    if (!request->assume_confirmed && confirm_disk(&lease, name)) {
+        fputs("Not confirmed; nothing written.\n", stderr);
+        goto out;
+    }
+    if (open_sources(request, owner_uid, items)) goto out;
     if (disk_unmount(lease.whole)) {
-        fputs("Refused: normal unmount failed; no force used.\n", stderr);
+        fputs("Refused: normal unmount failed (a file on the drive may be open); "
+              "no force used.\n", stderr);
         goto out;
     }
     unmounted = 1;
@@ -424,14 +609,11 @@ static int run_disk(const char *name, const char *source_path,
     char path[64];
     snprintf(path, sizeof(path), "/dev/%s", name);
     target = open(path, O_RDWR | O_EXCL | O_NOFOLLOW | O_CLOEXEC);
-    source = open(source_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    struct stat target_info, source_info;
+    struct stat target_info;
     uint32_t block_size = 0;
     uint64_t block_count = 0;
-    if (target < 0 || source < 0 || fstat(target, &target_info) ||
-        fstat(source, &source_info) || !S_ISBLK(target_info.st_mode) ||
-        !S_ISREG(source_info.st_mode) ||
-        source_info.st_uid != (uid_t)invoking_uid ||
+    if (target < 0 || fstat(target, &target_info) ||
+        !S_ISBLK(target_info.st_mode) ||
         ioctl(target, DKIOCGETBLOCKSIZE, &block_size) ||
         ioctl(target, DKIOCGETBLOCKCOUNT, &block_count) ||
         block_size < 512 || block_size > 65536 ||
@@ -440,38 +622,63 @@ static int run_disk(const char *name, const char *source_path,
         fputs("Refused: device access, geometry or identity failed.\n", stderr);
         goto out;
     }
+    /* A marker left by an earlier session no longer blocks forever: the
+       dirty mark protects the volume itself, so a volume that now passes the
+       preflight (Windows checked it, or nothing was written) is usable. */
+    if (quarantine_status(target, lease.size) > 0) {
+        uint64_t free_bytes = 0;
+        uint32_t marker_warnings = 0;
+        int marker_check = oh_ntfs_safety_preflight(target, lease.size,
+                                                    &free_bytes, &marker_warnings);
+        /* Leftover temporaries on a clean volume are removed by the copy. */
+        if (marker_check && !(marker_check == EINPROGRESS && !marker_warnings)) {
+            print_safety_warnings(marker_warnings);
+            fputs("Refused: previous OpenHDD transfer unresolved on this Mac. "
+                  "Check the volume on Windows (chkdsk X: /f) first.\n", stderr);
+            goto out;
+        }
+        char stale[80];
+        int directory = -1;
+        if (quarantine_name(target, lease.size, stale, sizeof(stale)) ||
+            (directory = quarantine_directory(0)) < 0 ||
+            quarantine_clear(directory, stale)) {
+            if (directory >= 0) close(directory);
+            fputs("Refused: stale local safety marker could not be cleared.\n",
+                  stderr);
+            goto out;
+        }
+        close(directory);
+        fputs("Earlier unfinished transfer: volume now checks clean; "
+              "local marker cleared.\n", stderr);
+    }
     int marker_status = quarantine_begin(target, lease.size, &quarantine_dir,
                                          quarantine_file,
                                          sizeof(quarantine_file));
     if (marker_status) {
-        if (marker_status == EINPROGRESS)
-            fputs("Refused: previous OpenHDD transfer unresolved on this Mac. "
-                  "Check the volume on Windows before another write.\n", stderr);
-        else
-            fputs("Refused: local safety marker could not be secured. "
-                  "No NTFS write started.\n", stderr);
+        fputs("Refused: local safety marker could not be secured. "
+              "No NTFS write started.\n", stderr);
         goto out;
     }
     quarantine_active = 1;
-    int code = oh_copy_new_file(target, lease.size, 1,
-                                source, file_name, &stage, &warnings);
+    ProgressFile progress = {
+        .fd = open_progress(request->progress_path, owner_uid),
+        .count = request->count };
+    size_t removed = 0;
+    int code = oh_copy_new_files(target, lease.size, 1, request->directory,
+                                 items, request->count, report_progress,
+                                 &progress, &failed, &stage, &warnings,
+                                 &removed);
+    if (removed)
+        fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
+                        "interrupted copy.\n", removed);
+    if (progress.fd >= 0) close(progress.fd);
     if (code) {
         if (stage == 1 && !quarantine_clear(quarantine_dir, quarantine_file))
             quarantine_active = 0; /* preflight never enters RW mount */
-        if (code == EINPROGRESS)
-            fputs("Refused: unfinished OpenHDD transfer found. "
-                  "Check volume on Windows; no new copy started.\n", stderr);
-        else {
-            print_safety_warnings(warnings);
-            if (!warnings && stage == 1 && code == EBUSY)
-                fputs("Preflight refused: volume busy or safety state uncertain; "
-                      "no writes started.\n", stderr);
-            fprintf(stderr, "Copy failed at stage %d; code %d. "
-                            "Do not trust destination; check with Windows.\n",
-                    stage, code);
-        }
+        explain_failure(code, stage, failed, request->count, warnings);
         goto out;
     }
+    wrote = 1;
     if (inspect_partition(&lease, name, 1)) {
         fputs("Copy verified, but device identity changed. No success reported.\n",
               stderr);
@@ -479,7 +686,8 @@ static int run_disk(const char *name, const char *source_path,
     }
     result = 0;
 out:
-    if (source >= 0) close(source);
+    close_sources(items, request->count);
+    free(items);
     if (target >= 0 && close(target)) {
         fputs("Device close failed; no success reported.\n", stderr);
         result = 1;
@@ -489,11 +697,18 @@ out:
         DADiskUnclaim(lease.whole);
         lease.claimed = 0;
         if (!same_device) {
-            fputs("Device identity changed; automatic eject skipped.\n", stderr);
+            fputs("Device identity changed; automatic remount skipped.\n", stderr);
             result = 1;
-        } else if (disk_unmount(lease.whole) || disk_eject(lease.whole)) {
-            fputs("Eject failed; keep drive connected and inspect it.\n", stderr);
-            result = 1;
+        } else if (request->eject) {
+            if (disk_unmount(lease.whole) || disk_eject(lease.whole)) {
+                fputs("Eject failed; keep drive connected and inspect it.\n", stderr);
+                result = 1;
+            }
+        } else if (restore_read_only(lease.partition)) {
+            /* Data and metadata are already synced; only the view failed. */
+            fputs(wrote ? "Copy complete, but the read-only remount failed; "
+                          "eject and reconnect the drive to see the files.\n" :
+                          "Read-only remount failed.\n", stderr);
         }
     } else if (unmounted && had_mount && inspect_partition(&lease, name, 1) == 0) {
         if (restore_read_only(lease.partition))
@@ -503,22 +718,23 @@ out:
     }
     if (!result && quarantine_active) {
         if (quarantine_clear(quarantine_dir, quarantine_file)) {
-            fputs("Eject succeeded, but local safety marker remains uncertain.\n",
-                  stderr);
+            fputs("Copy complete, but local safety marker remains.\n", stderr);
             result = 1;
         } else quarantine_active = 0;
     }
     if (quarantine_dir >= 0) close(quarantine_dir);
-    if (!result) puts("PASS: copied, independently verified and ejected.");
-    else fputs("NO SUCCESS: drive may need Windows chkdsk.\n", stderr);
+    if (!result)
+        printf("PASS: %zu file(s) copied, independently verified; volume clean%s.\n",
+               request->count, request->eject ? " and ejected" : "");
+    else fputs("NO SUCCESS: see the message above.\n", stderr);
     lease_close(&lease);
     return result;
 }
 
 static int run_check_disk(const char *name)
 {
-    if (geteuid() != 0 || !partition_name(name)) {
-        fputs("Refused: run read-only check with sudo and a partition name.\n",
+    if (!partition_name(name) || select_quarantine_path()) {
+        fputs("Refused: run the read-only check with a partition name.\n",
               stderr);
         return 1;
     }
@@ -593,13 +809,15 @@ static int run_check_disk(const char *name)
         goto out;
     }
     int marker_status = quarantine_status(target, lease.size);
-    if (marker_status) {
-        fputs(marker_status > 0 ?
-              "Read-only check found an unresolved local OpenHDD transfer.\n" :
-              "Read-only check could not inspect the local safety marker.\n",
+    if (marker_status < 0) {
+        fputs("Read-only check could not inspect the local safety marker.\n",
               stderr);
         goto out;
     }
+    if (marker_status > 0)
+        fputs("Local marker: an earlier OpenHDD transfer did not finish on this "
+              "Mac. If the volume checks clean below, the next copy clears it.\n",
+              stderr);
     int code = oh_ntfs_safety_preflight(target, lease.size, &free_bytes,
                                         &warnings);
     if (!code && inspect_partition(&lease, name, 1)) code = EIO;
@@ -638,29 +856,102 @@ out:
     return result;
 }
 
+static int confirm_disk(DiskLease *lease, const char *name)
+{
+    if (!isatty(STDIN_FILENO)) return -1;
+    char model[256], volume[256];
+    if (display_value(lease->whole, kDADiskDescriptionDeviceModelKey,
+                      model, sizeof(model)) ||
+        display_value(lease->partition, kDADiskDescriptionVolumeNameKey,
+                      volume, sizeof(volume))) return -1;
+    fprintf(stderr, "External NTFS partition: %s (%llu bytes).\n"
+            "Device: %s; volume: %s.\n"
+            "OpenHDD adds new files only. If the copy is interrupted, the volume\n"
+            "is marked for checking and must be repaired on Windows (chkdsk /f).\n"
+            "Type COPY %s to continue: ",
+            name, (unsigned long long)lease->size, model, volume, name);
+    char response[64], expected[64];
+    snprintf(expected, sizeof(expected), "COPY %s\n", name);
+    return fgets(response, sizeof(response), stdin) &&
+        !strcmp(response, expected) ? 0 : -1;
+}
+
+static void usage(void)
+{
+    fputs("Usage: sudo OpenHDDCopy --check-disk diskXsY\n"
+          "       OpenHDDCopy --check-image IMAGE\n"
+          "       OpenHDDCopy --image PRIVATE_IMAGE [--dir PATH] SOURCE NAME [SOURCE NAME ...]\n"
+          "       sudo OpenHDDCopy --disk diskXsY [--dir PATH] [--yes] [--eject]\n"
+          "                        [--owner-uid UID] [--progress FILE]\n"
+          "                        SOURCE NAME [SOURCE NAME ...]\n", stderr);
+}
+
+static int parse_uid(const char *text, long *out)
+{
+    char *end = NULL;
+    errno = 0;
+    unsigned long value = strtoul(text, &end, 10);
+    if (!text || !*text || !end || *end || errno || value > UINT_MAX) return -1;
+    *out = (long)value;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && !strcmp(argv[1], "--check-disk"))
         return run_check_disk(argv[2]);
+    if (argc == 3 && !strcmp(argv[1], "--check-image"))
+        return run_check_image(argv[2]);
+    if (argc < 5 || (strcmp(argv[1], "--image") && strcmp(argv[1], "--disk"))) {
+        usage();
+        return 2;
+    }
+    int disk = !strcmp(argv[1], "--disk");
     #ifdef OPENHDD_TESTING
-    if (argc == 5 && !strcmp(argv[1], "--disk")) {
+    if (disk) {
         fputs("Test binary accepts private images only.\n", stderr);
         return 2;
     }
     #endif
-    if (argc != 5 ||
-        (strcmp(argv[1], "--image") && strcmp(argv[1], "--disk"))) {
-        fputs("Usage: sudo OpenHDDCopy --check-disk diskXsY\n"
-              "       OpenHDDCopy --image PRIVATE_IMAGE SOURCE NEW_NAME\n"
-              "       sudo OpenHDDCopy --disk diskXsY SOURCE NEW_NAME\n",
-              stderr);
+    CopyRequest request = { .target = argv[2], .owner_uid = -1 };
+    const char *sudo_uid = getenv("SUDO_UID");
+    if (sudo_uid && parse_uid(sudo_uid, &request.owner_uid)) request.owner_uid = -1;
+    int index = 3;
+    for (; index < argc && !strncmp(argv[index], "--", 2); ++index) {
+        const char *option = argv[index];
+        if (!strcmp(option, "--yes") && disk) request.assume_confirmed = 1;
+        else if (!strcmp(option, "--eject") && disk) request.eject = 1;
+        else if (!strcmp(option, "--dir") && index + 1 < argc && !request.directory) {
+            request.directory = normalized_copy(argv[++index]);
+            if (!request.directory) { usage(); return 2; }
+        } else if (!strcmp(option, "--progress") && index + 1 < argc)
+            request.progress_path = argv[++index];
+        else if (!strcmp(option, "--owner-uid") && disk && index + 1 < argc) {
+            if (parse_uid(argv[++index], &request.owner_uid)) { usage(); return 2; }
+        } else { usage(); request_free(&request); return 2; }
+    }
+    int remaining = argc - index;
+    if (remaining < 2 || remaining % 2) { usage(); request_free(&request); return 2; }
+    request.count = (size_t)remaining / 2;
+    request.sources = calloc(request.count, sizeof(*request.sources));
+    request.names = calloc(request.count, sizeof(*request.names));
+    if (!request.sources || !request.names) { request_free(&request); return 1; }
+    for (size_t i = 0; i < request.count; ++i) {
+        request.sources[i] = argv[index + 2 * (int)i];
+        request.names[i] = normalized_copy(argv[index + 2 * (int)i + 1]);
+        if (!request.names[i] || !oh_ntfs_valid_new_name(request.names[i])) {
+            fprintf(stderr, "Refused: invalid new file name for item %zu. "
+                            "No disk access.\n", i + 1);
+            request_free(&request);
+            return 2;
+        }
+    }
+    if (request.directory && !oh_ntfs_valid_directory_path(request.directory)) {
+        fputs("Refused: invalid destination folder. No disk access.\n", stderr);
+        request_free(&request);
         return 2;
     }
-    if (!oh_ntfs_valid_new_name(argv[4])) {
-        fputs("Refused: invalid new file name. No disk access.\n", stderr);
-        return 2;
-    }
-    if (!strcmp(argv[1], "--image"))
-        return run_image(argv[2], argv[3], argv[4]);
-    return run_disk(argv[2], argv[3], argv[4]);
+    int result = disk ? run_disk(&request) : run_image(&request);
+    request_free(&request);
+    return result;
 }

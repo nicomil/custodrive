@@ -38,6 +38,12 @@ int oh_ntfs_lookup(OHNTFSVolume *volume, uint64_t parent,
                    const char *utf8_name, OHNTFSItem *out);
 int oh_ntfs_list(OHNTFSVolume *volume, uint64_t directory,
                  OHNTFSEntryCallback callback, void *context);
+/* Case-insensitive match using the volume's $UpCase table, as Windows does. */
+int oh_ntfs_name_exists_nocase(OHNTFSVolume *volume, uint64_t directory,
+                               const char *utf8_name, int *exists);
+/* Resolves a '/'-separated path of existing directories from the root. */
+int oh_ntfs_resolve_directory(OHNTFSVolume *volume, const char *utf8_path,
+                              uint64_t *inode);
 int oh_ntfs_free_bytes(OHNTFSVolume *volume, uint64_t *out_bytes);
 int64_t oh_ntfs_read(OHNTFSVolume *volume, uint64_t inode,
                      uint64_t offset, void *buffer, uint64_t length);

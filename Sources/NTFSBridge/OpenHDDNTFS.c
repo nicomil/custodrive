@@ -347,6 +347,77 @@ int oh_ntfs_list(OHNTFSVolume *ctx, uint64_t directory,
     return error;
 }
 
+struct name_probe {
+    ntfs_volume *ntfs;
+    const ntfschar *name;
+    int length;
+    int found;
+};
+
+static int probe_entry(void *opaque, const ntfschar *name, int name_length,
+                       int name_type, s64 position, MFT_REF mref, unsigned type)
+{
+    (void)name_type; (void)position; (void)mref; (void)type;
+    struct name_probe *probe = opaque;
+    if (ntfs_names_are_equal(name, (size_t)name_length, probe->name,
+                             (size_t)probe->length, IGNORE_CASE,
+                             probe->ntfs->upcase, probe->ntfs->upcase_len)) {
+        probe->found = 1;
+        return 1;
+    }
+    return 0;
+}
+
+int oh_ntfs_name_exists_nocase(OHNTFSVolume *ctx, uint64_t directory,
+                               const char *name, int *exists)
+{
+    if (!ctx || !name || !*name || !exists || strchr(name, '/') ||
+        directory > 0x0000ffffffffffffULL) return EINVAL;
+    *exists = 0;
+    ntfschar *wide = NULL;
+    int length = ntfs_mbstoucs(name, &wide);
+    if (length <= 0 || length > 255) { free(wide); return EINVAL; }
+    pthread_mutex_lock(&ctx->lock);
+    ntfs_inode *dir = ntfs_inode_open(ctx->ntfs, directory);
+    int error = 0;
+    if (!dir) error = errno ? errno : EIO;
+    else if (!(dir->mrec->flags & MFT_RECORD_IS_DIRECTORY)) error = ENOTDIR;
+    if (!error) {
+        struct name_probe probe = { .ntfs = ctx->ntfs, .name = wide, .length = length };
+        s64 position = 0;
+        errno = 0;
+        int result = ntfs_readdir(dir, &position, &probe, probe_entry);
+        if (probe.found) *exists = 1;
+        else if (result) error = errno ? errno : EIO;
+    }
+    if (dir && ntfs_inode_close(dir) && !error) error = EIO;
+    pthread_mutex_unlock(&ctx->lock);
+    free(wide);
+    return error;
+}
+
+int oh_ntfs_resolve_directory(OHNTFSVolume *ctx, const char *path,
+                              uint64_t *inode)
+{
+    if (!ctx || !path || !inode || strlen(path) > 4096) return EINVAL;
+    uint64_t current = FILE_root;
+    char *copy = strdup(path);
+    if (!copy) return ENOMEM;
+    int error = 0;
+    char *cursor = copy, *component;
+    while (!error && (component = strsep(&cursor, "/"))) {
+        if (!*component) continue;
+        if (!strcmp(component, ".") || !strcmp(component, "..")) { error = EINVAL; break; }
+        OHNTFSItem item;
+        error = oh_ntfs_lookup(ctx, current, component, &item);
+        if (!error && item.kind != 2) error = ENOTDIR;
+        if (!error) current = item.inode;
+    }
+    free(copy);
+    if (!error) *inode = current;
+    return error;
+}
+
 int oh_ntfs_free_bytes(OHNTFSVolume *ctx, uint64_t *out_bytes)
 {
     if (!ctx || !out_bytes) return EINVAL;
