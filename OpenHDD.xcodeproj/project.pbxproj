@@ -10,19 +10,30 @@
 		1065ADD6C22DBDCFD60D6AE8 /* OpenHDDHelper in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1F0C02F0C73B77667623278F /* OpenHDDNTFS.c in Sources */ = {isa = PBXBuildFile; fileRef = 03D229F0D82931616542DA57 /* OpenHDDNTFS.c */; };
 		338C99247438D9A7FAB68AE8 /* OpenHDDNTFS.c in Sources */ = {isa = PBXBuildFile; fileRef = 03D229F0D82931616542DA57 /* OpenHDDNTFS.c */; };
+		37F6EAB57C20174F7ED0E04D /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = C37CCCD37E6049A88EA4EE71 /* AppIcon.icns */; };
 		400585A1853FE3CFB2BF1DC3 /* NTFSCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */; };
+		4CFC67A6F331D75EDDEB1487 /* NTFSSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1469C9EA8248EEBCFD412A67 /* NTFSSession.swift */; };
 		5286F49315F2A31553D81A37 /* DiskHelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */; };
+		5D63DAAF0B4459027EABC05D /* UISelfTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6881363039028E071232B1A7 /* UISelfTest.swift */; };
 		5E154CF4EFB8ADB1862CA425 /* NTFSCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */; };
 		6526313D1341ED3A4F800A47 /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
+		6CE79C3AC18877B06469798D /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22DBA72B6037D143B86EF3D3 /* BrowserView.swift */; };
+		6FCD482F6A916F38AE4D924A /* UISelfTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6881363039028E071232B1A7 /* UISelfTest.swift */; };
 		77FDA0A83D02DF7E59AB2101 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DB571EF6AFBA8AECD59611 /* NTFSFileSystem.swift */; };
+		8081D1505DCA6AA8EDFB9404 /* LocalBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F51500E5D9AB667DBC9794 /* LocalBrowser.swift */; };
+		8BB4404D6CE1B97682E2FF6D /* NTFSSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1469C9EA8248EEBCFD412A67 /* NTFSSession.swift */; };
 		8FE19B2FFC9ADF50FE9D7145 /* InfoLocal.plist in Resources */ = {isa = PBXBuildFile; fileRef = 7314169618686C21A0C8D68B /* InfoLocal.plist */; };
 		9A436C837BBE6D91BA64C3C5 /* OpenHDDApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */; };
 		9F9477FCD661D11C93F0548E /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
 		A0B6DF74DF192BB1C4ED324A /* DiskHelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */; };
 		B844C3E2BF2C82D309162AB2 /* OpenHDDVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A73CEC1BAB69F50E6F97641 /* OpenHDDVolume.swift */; };
+		C5B49E9991A97C05C5AF4124 /* BrowserTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = A076620BD7E2B9DFF54FE39E /* BrowserTable.swift */; };
+		DE285EE3A6E86084A606B995 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22DBA72B6037D143B86EF3D3 /* BrowserView.swift */; };
 		E268221B1ABE182989872A5F /* HelperClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00EB2874E444E83AEC55463D /* HelperClient.swift */; };
 		E634B114F319111FF4BE74CE /* OpenHDDApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */; };
 		EB850E56FB77F36C2D266788 /* OpenHDDNTFS.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 5C8B953B8DB951E6AD2509E3 /* OpenHDDNTFS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F12955FD634E31BD76BC6E0A /* BrowserTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = A076620BD7E2B9DFF54FE39E /* BrowserTable.swift */; };
+		F131C404F2938ED6A4C7909F /* LocalBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F51500E5D9AB667DBC9794 /* LocalBrowser.swift */; };
 		F56150D8196F7CA1FF44F1D2 /* it.openhdd.app.helper.plist in CopyFiles */ = {isa = PBXBuildFile; fileRef = 8853BC9AA2BA658E4ABB38CF /* it.openhdd.app.helper.plist */; };
 /* End PBXBuildFile section */
 
@@ -96,20 +107,26 @@
 		00EB2874E444E83AEC55463D /* HelperClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperClient.swift; sourceTree = "<group>"; };
 		03D229F0D82931616542DA57 /* OpenHDDNTFS.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = OpenHDDNTFS.c; sourceTree = "<group>"; };
 		03DB571EF6AFBA8AECD59611 /* NTFSFileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSFileSystem.swift; sourceTree = "<group>"; };
+		1469C9EA8248EEBCFD412A67 /* NTFSSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSSession.swift; sourceTree = "<group>"; };
 		14A1C0316444EA2E73618AC3 /* NTFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NTFSExtension.entitlements; sourceTree = "<group>"; };
 		20AC860253B74ECDC374ACEF /* DiskHelperProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskHelperProtocol.swift; sourceTree = "<group>"; };
+		22DBA72B6037D143B86EF3D3 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		23496A484677DC6B8101D99B /* OpenHDD.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHDD.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AD11839730F2720A022B0BC /* OpenHDDNTFS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OpenHDDNTFS.h; sourceTree = "<group>"; };
 		3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHDDApp.swift; sourceTree = "<group>"; };
 		4A73CEC1BAB69F50E6F97641 /* OpenHDDVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHDDVolume.swift; sourceTree = "<group>"; };
 		571CB75F6C5410D25E84F9F1 /* OpenHDDHelper */ = {isa = PBXFileReference; includeInIndex = 0; path = OpenHDDHelper; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C8B953B8DB951E6AD2509E3 /* OpenHDDNTFS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = OpenHDDNTFS.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		6881363039028E071232B1A7 /* UISelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UISelfTest.swift; sourceTree = "<group>"; };
 		69200E16238552B79E4EA473 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7314169618686C21A0C8D68B /* InfoLocal.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = InfoLocal.plist; sourceTree = "<group>"; };
 		7CE88E52AC4C768C1ACEB742 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8853BC9AA2BA658E4ABB38CF /* it.openhdd.app.helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = it.openhdd.app.helper.plist; sourceTree = "<group>"; };
 		9F758E50E0EC76566220DB52 /* OpenHDDLocal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHDDLocal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A076620BD7E2B9DFF54FE39E /* BrowserTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserTable.swift; sourceTree = "<group>"; };
+		C37CCCD37E6049A88EA4EE71 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSCopy.swift; sourceTree = "<group>"; };
+		E1F51500E5D9AB667DBC9794 /* LocalBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalBrowser.swift; sourceTree = "<group>"; };
 		F3D1E2E1FD370A5508EB4E7D /* DiskHelperMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskHelperMain.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -123,6 +140,7 @@
 				A3E1F6ADBF49A0809DEC57A6 /* NTFSBridge */,
 				924D36AB384A77C891998DBF /* NTFSExtension */,
 				CFE396FF12253CC19757F800 /* OpenHDDApp */,
+				F8E74E76548416D29A2B6579 /* Resources */,
 				4BEB0D02335F2B9A180D59EA /* Shared */,
 				931667A029E3E367D64D1C9B /* Products */,
 			);
@@ -190,14 +208,27 @@
 		CFE396FF12253CC19757F800 /* OpenHDDApp */ = {
 			isa = PBXGroup;
 			children = (
+				A076620BD7E2B9DFF54FE39E /* BrowserTable.swift */,
+				22DBA72B6037D143B86EF3D3 /* BrowserView.swift */,
 				00EB2874E444E83AEC55463D /* HelperClient.swift */,
 				7CE88E52AC4C768C1ACEB742 /* Info.plist */,
 				7314169618686C21A0C8D68B /* InfoLocal.plist */,
+				E1F51500E5D9AB667DBC9794 /* LocalBrowser.swift */,
 				CCAA9FFC29AB3F62EC17A0AF /* NTFSCopy.swift */,
+				1469C9EA8248EEBCFD412A67 /* NTFSSession.swift */,
 				3F5879FCE0574DAB61A497C4 /* OpenHDDApp.swift */,
+				6881363039028E071232B1A7 /* UISelfTest.swift */,
 			);
 			name = OpenHDDApp;
 			path = Sources/OpenHDDApp;
+			sourceTree = "<group>";
+		};
+		F8E74E76548416D29A2B6579 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				C37CCCD37E6049A88EA4EE71 /* AppIcon.icns */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 		FD8FA8B204661F4F347D01B7 /* include */ = {
@@ -237,6 +268,7 @@
 			buildConfigurationList = B2EEDF4574308B8BC0585A59 /* Build configuration list for PBXNativeTarget "OpenHDDLocal" */;
 			buildPhases = (
 				3E50A83A240900DE6FC6CE6D /* Sources */,
+				A5F2C9B0F70C44FC6D503F42 /* Resources */,
 				12E5C699F2F5DE020997A73A /* Embed OpenHDDCopy */,
 			);
 			buildRules = (
@@ -367,6 +399,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A5F2C9B0F70C44FC6D503F42 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				37F6EAB57C20174F7ED0E04D /* AppIcon.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -397,10 +437,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F12955FD634E31BD76BC6E0A /* BrowserTable.swift in Sources */,
+				DE285EE3A6E86084A606B995 /* BrowserView.swift in Sources */,
 				6526313D1341ED3A4F800A47 /* DiskHelperProtocol.swift in Sources */,
 				E268221B1ABE182989872A5F /* HelperClient.swift in Sources */,
+				8081D1505DCA6AA8EDFB9404 /* LocalBrowser.swift in Sources */,
 				400585A1853FE3CFB2BF1DC3 /* NTFSCopy.swift in Sources */,
+				4CFC67A6F331D75EDDEB1487 /* NTFSSession.swift in Sources */,
 				9A436C837BBE6D91BA64C3C5 /* OpenHDDApp.swift in Sources */,
+				5D63DAAF0B4459027EABC05D /* UISelfTest.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -408,9 +453,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C5B49E9991A97C05C5AF4124 /* BrowserTable.swift in Sources */,
+				6CE79C3AC18877B06469798D /* BrowserView.swift in Sources */,
 				9F9477FCD661D11C93F0548E /* DiskHelperProtocol.swift in Sources */,
+				F131C404F2938ED6A4C7909F /* LocalBrowser.swift in Sources */,
 				5E154CF4EFB8ADB1862CA425 /* NTFSCopy.swift in Sources */,
+				8BB4404D6CE1B97682E2FF6D /* NTFSSession.swift in Sources */,
 				E634B114F319111FF4BE74CE /* OpenHDDApp.swift in Sources */,
+				6FCD482F6A916F38AE4D924A /* UISelfTest.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -478,7 +528,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.local;
+				PRODUCT_BUNDLE_IDENTIFIER = app.custodrive.mac;
+				PRODUCT_NAME = Custodrive;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OPENHDD_LOCAL";
 			};
@@ -521,7 +572,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = it.openhdd.local;
+				PRODUCT_BUNDLE_IDENTIFIER = app.custodrive.mac;
+				PRODUCT_NAME = Custodrive;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OPENHDD_LOCAL";
 			};

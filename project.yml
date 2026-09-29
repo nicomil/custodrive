@@ -17,16 +17,43 @@ targets:
     sources:
       - path: Sources/OpenHDDApp/OpenHDDApp.swift
       - path: Sources/OpenHDDApp/NTFSCopy.swift
+      - path: Sources/OpenHDDApp/NTFSSession.swift
+      - path: Sources/OpenHDDApp/LocalBrowser.swift
+      - path: Sources/OpenHDDApp/BrowserTable.swift
+      - path: Sources/OpenHDDApp/BrowserView.swift
+      - path: Sources/OpenHDDApp/UISelfTest.swift
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
       - path: Sources/Shared/DiskHelperProtocol.swift
     info:
       path: Sources/OpenHDDApp/InfoLocal.plist
       properties:
-        CFBundleDisplayName: OpenHDD Local
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleDisplayName: Custodrive
+        CFBundleName: Custodrive
+        CFBundleIconFile: AppIcon
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: "Custodrive — dischi esterni al sicuro"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
         LSMinimumSystemVersion: "15.4"
+        # Files dropped on the Dock icon are offered for copying.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: File e cartelle da copiare su NTFS
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.item, public.folder]
+        # Finder: right click > Services > Copia su disco NTFS con Custodrive.
+        NSServices:
+          - NSMenuItem:
+              default: Copia su disco NTFS con Custodrive
+            NSMessage: copyToNTFS
+            NSPortName: Custodrive
+            NSRequiredContext: {}
+            NSSendFileTypes: [public.item, public.folder]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: it.openhdd.local
+        PRODUCT_BUNDLE_IDENTIFIER: app.custodrive.mac
+        PRODUCT_NAME: Custodrive
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) OPENHDD_LOCAL
     postBuildScripts:

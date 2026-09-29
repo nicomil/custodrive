@@ -1,226 +1,235 @@
-# OpenHDD — lettura e copia sicura di file su NTFS dal Mac
+<p align="center">
+  <img src="docs/images/icon.png" width="128" alt="Icona di Custodrive">
+</p>
 
-**OpenHDD Local** è l'app gratuita, senza abbonamento Apple Developer, per dischi
-NTFS esterni su Mac Apple Silicon (macOS 15.4 o successivo). Legge NTFS con il
-driver di macOS, in sola lettura, e **copia file e cartelle sul disco NTFS**
-con verifica completa; crea, rinomina, sposta ed elimina elementi del disco. Per APFS/exFAT/FAT/HFS usa macOS.
+<h1 align="center">Custodrive</h1>
 
-```sh
-Scripts/build-local-app.sh
-open Build/OpenHDDLocal.app
-```
+<p align="center">
+  <b>I tuoi dischi esterni, al sicuro.</b><br>
+  Leggi e scrivi su dischi e chiavette Windows (NTFS) dal Mac, con ogni
+  operazione verificata.
+</p>
 
-## Copiare file su un disco NTFS
+<p align="center">
+  Mac Apple Silicon · macOS 15.4 o successivo · gratuita, senza driver né abbonamenti
+</p>
 
-1. Collega il disco e selezionalo nell'elenco.
-2. Premi **Copia sul disco…** e scegli file o cartelle intere, oppure
-   **trascinali dal Finder** sulla riga del disco. Poi scegli la destinazione:
-   la cartella principale o una cartella esistente del disco. Le cartelle
-   vengono copiate con tutte le sottocartelle; `.DS_Store` e i file `._*` del
-   Mac vengono saltati, i link simbolici non vengono seguiti né copiati.
-   Se un file esiste già, l'app chiede se **sostituirlo** o **saltarlo**.
-3. Conferma. Per una chiavetta o un disco USB macOS chiede la password di
-   amministratore con il pannello di sistema di `authopen`: l'autorizzazione
-   vale solo per aprire quella partizione, il resto della copia gira con i
-   permessi dell'app.
-4. Segui la barra: mostra fase (scrittura, sincronizzazione, verifica,
-   pubblicazione, chiusura), file corrente, velocità misurata e tempo
-   rimanente per l'intera operazione. Anche la preparazione dell'elenco di
-   cartelle grandi mostra quanti file ha trovato.
-   **Annulla** ferma la copia in sicurezza:
-   - durante la scrittura o la verifica, il lotto in corso viene tolto
-     (file temporanei e cartelle appena create) e il disco resta pulito;
-   - i lotti già completati restano sul disco, verificati;
-   - quando la pubblicazione dei nomi è già iniziata, la copia termina.
-5. Attendi il messaggio **«Copia completata e verificata»**: il disco torna
-   montato in sola lettura e i file nuovi sono visibili nel Finder. Poi usa
-   **Espelli** prima di scollegarlo.
+---
 
-Cosa garantisce la copia ([piano v1](docs/piano-scrittura-v1.md)):
+macOS legge i dischi NTFS ma non ci scrive. Custodrive ti permette di
+copiare foto e video, creare cartelle, rinominare, spostare ed eliminare su
+dischi formattati da Windows, con un'interfaccia simile al Finder. A ogni
+passo il disco resta coerente: se qualcosa va storto (un cavo staccato, il
+Mac che si spegne), niente di quello che c'era prima va perso e Windows sa
+riportare il disco a posto.
 
-- **Tocca solo quello che hai scelto.** Aggiunge file e cartelle nuovi; una
-  cartella con lo stesso nome di una esistente viene unita a quella. Un file
-  già presente viene sostituito solo se lo chiedi, e solo dopo che il nuovo è
-  stato scritto e verificato: fino a quel momento il vecchio resta al suo
-  posto. Non si sostituisce una cartella con un file, né un file il cui nome
-  differisce solo per le maiuscole. I nomi che Windows non accetta
-  (`: * ? " < > |`, `CON`, punto finale…) vengono rifiutati prima di scrivere.
-- **Nessun falso successo.** Il successo compare solo dopo la sincronizzazione
-  del disco e la rilettura di ogni file con confronto SHA-256.
-- **Un'interruzione è sempre riparabile da Windows.** Prima di qualunque
-  modifica il volume viene marcato "da controllare" (dirty bit NTFS). Il segno
-  viene tolto solo alla fine. Se il disco viene scollegato o il Mac si spegne
-  durante la copia, OpenHDD rifiuta nuove scritture su quel disco. Windows lo
-  segnala come da controllare, e `chkdsk X: /f` lo riporta coerente. I file già
-  presenti restano intatti; si perde al massimo il file in copia. Alla copia
-  successiva OpenHDD rimuove da solo i propri file temporanei rimasti e
-  conclude le sostituzioni interrotte usando il proprio diario
-  (`.OpenHDD-journal`): sotto il nome resta il file vecchio o quello nuovo,
-  mai nessuno dei due. Fino ad allora un file sostituito può comparire su
-  Windows come `.OpenHDD-old-…`: non cancellarlo a mano.
-- **Copie grandi a lotti.** Migliaia di file vengono copiati in lotti (al
-  massimo 1000 file o 8 GB), ognuno completo e verificato; la barra resta una
-  sola per l'intera copia. Se qualcosa va storto in un lotto, quelli
-  precedenti restano sul disco, verificati.
-- **Niente scrittura su volumi a rischio.** Dischi con Windows in
-  ibernazione/Avvio rapido, journal non pulito o già da controllare vengono
-  rifiutati con il motivo.
+<p align="center">
+  <img src="docs/images/01-browser.png" width="780" alt="Custodrive: dischi a sinistra, contenuto del disco a destra">
+</p>
 
-Se compare «Copia non completata: controlla il disco su Windows»: collega il
-disco a un PC Windows, apri il Prompt dei comandi come amministratore ed esegui
-`chkdsk X: /f`, dove X è la lettera del disco. Poi puoi tornare a usarlo con
-OpenHDD. Se Windows propone di **formattare** il disco, rifiuta: dopo
-un'interruzione basta `chkdsk X: /f`.
+## Indice
 
-Prima di portare un disco da Windows al Mac, usa sempre **Rimozione sicura
-dell'hardware** su Windows. Un disco staccato mentre Windows lo teneva aperto
-ha il journal NTFS non chiuso, e OpenHDD rifiuta di scriverci finché non viene
-ricollegato a Windows ed espulso correttamente.
+- [Primi passi](#primi-passi)
+- [Funzioni](#funzioni)
+- [Come ti protegge](#come-ti-protegge)
+- [Scorciatoie](#scorciatoie)
+- [Problemi comuni](#problemi-comuni)
+- [Requisiti e limiti](#requisiti-e-limiti)
+- [In arrivo](#in-arrivo)
+- [Per sviluppatori](#per-sviluppatori)
 
-Prestazioni: tutto l'I/O passa dal device raw (`/dev/rdiskXsY`) a blocchi fino
-a 4 MB; il device normale resta aperto in esclusiva solo per impedire che il
-volume venga rimontato durante la copia. I file di un lotto vengono prima
-scritti tutti, poi riletti una sola volta dal disco, poi pubblicati: i
-montaggi NTFS sono pochi e costanti anche con migliaia di foto.
+## Primi passi
 
-## Modificare il disco: nuova cartella, rinomina, sposta, elimina
+### 1. Installa
 
-Dal menu **Modifica** dell'app:
+1. Apri `Custodrive-1.0.0.dmg` e trascina **Custodrive** sulla cartella
+   **Applicazioni**.
+2. Apri Custodrive dalla cartella Applicazioni.
 
-- **Nuova cartella…**: scegli dove, poi il nome.
-- **Rinomina…**: un file o una cartella, nella stessa cartella; si può anche
-  cambiare solo maiuscole e minuscole.
-- **Sposta…**: uno o più file e cartelle in un'altra cartella dello stesso
-  disco. È immediato: i dati non vengono ricopiati. Una cartella non può
-  finire dentro se stessa, e il nome non deve esistere già nella
-  destinazione. Se lo spostamento si interrompe, dopo `chkdsk` un elemento
-  può comparire in entrambe le cartelle: il contenuto è lo stesso, basta
-  eliminare il nome in più. Non serve farlo a mano: dopo `chkdsk`, la volta
-  successiva OpenHDD completa da solo spostamenti e rinomine interrotti
-  usando il diario.
-- **Elimina…**: file e cartelle, queste con tutto il contenuto. Sul disco NTFS
-  non c'è un Cestino: l'app chiede conferma e l'operazione non si annulla.
-
-Valgono le stesse regole della copia: volume marcato da controllare per tutta
-l'operazione, verifica finale, rifiuto di volumi a rischio. In più OpenHDD non
-tocca i file di sistema (`$MFT`, `System Volume Information`…) e non segue
-junction, link simbolici o file cifrati: se una cartella ne contiene, rifiuta
-senza cambiare nulla. Da riga di comando:
+**La prima volta su un nuovo Mac** macOS la blocca con «non è possibile
+verificare lo sviluppatore»: Custodrive non è distribuita con un certificato
+Apple Developer. Chiudi l'avviso, poi vai in **Impostazioni di Sistema →
+Privacy e sicurezza** e, in fondo alla pagina, premi **Apri comunque**
+accanto a «Custodrive». In alternativa, dal Terminale:
 
 ```sh
-sudo Build/OpenHDDCopy --disk disk4s1 --mkdir "Foto" "Estate 2026"
-sudo Build/OpenHDDCopy --disk disk4s1 --rename "Foto/Estate 2026" "Estate 2026 mare"
-sudo Build/OpenHDDCopy --disk disk4s1 --delete "vecchio.bin" "Cartella da togliere"
-sudo Build/OpenHDDCopy --disk disk4s1 --move "Archivio" "Foto/Estate 2026" "note.txt"
+xattr -dr com.apple.quarantine /Applications/Custodrive.app
 ```
 
-Fuori da queste versioni: scrivere dal Finder, modificare file sul posto,
-file compressi o cifrati NTFS.
+Serve una sola volta per Mac.
 
-### Da riga di comando
+### 2. Collega un disco e sfoglialo
 
-Il motore dell'app è `Build/OpenHDDCopy` (anche in
-`OpenHDDLocal.app/Contents/Resources/`):
+Collega un disco o una chiavetta NTFS: compare a sinistra, sotto **Dischi
+esterni**. Selezionalo e sfoglia le cartelle come nel Finder. Finché non
+modifichi niente, il disco resta montato in sola lettura ed è visibile
+anche nel Finder.
+
+<p align="center">
+  <img src="docs/images/02-folder.png" width="780" alt="Una cartella di foto aperta in Custodrive">
+</p>
+
+### 3. Copia e modifica
+
+Trascina file o cartelle dal Finder nella finestra, oppure sopra una
+cartella. Alla prima modifica macOS chiede la **password di amministratore
+una sola volta**. Da quel momento il disco è in **modifica attiva**:
+riservato a Custodrive, con ogni operazione immediata.
+
+<p align="center">
+  <img src="docs/images/03-edit-session.png" width="780" alt="Modifica attiva: il disco è riservato a Custodrive">
+</p>
+
+### 4. Termina ed espelli
+
+Quando hai finito premi **Termina modifiche**: il disco torna in sola
+lettura e visibile nel Finder. Poi usa **Espelli** prima di scollegarlo.
+Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
+
+## Funzioni
+
+### Sfogliare
+- **Barra laterale** con tutti i dischi esterni e il loro stato (sola
+  lettura, modifica attiva, verifica necessaria).
+- **Elenco a colonne** (nome, dimensione, data), ordinabile con un clic
+  sull'intestazione; le cartelle stanno sempre in cima.
+- **Percorso cliccabile**, pulsanti Indietro, Avanti e Cartella superiore.
+- **Doppio clic** per aprire una cartella o un file.
+- **Quick Look** con la barra spaziatrice, come nel Finder.
+
+### Copiare dal Mac
+- Trascina file e **cartelle intere** dal Finder: tutte le sottocartelle
+  vengono ricreate. I file di servizio del Mac (`.DS_Store`, `._*`) vengono
+  saltati; i link simbolici non vengono seguiti.
+- Oppure usa il pulsante **Copia qui file dal Mac…**, il tasto destro sui
+  file nel Finder → **Servizi → Copia su disco NTFS con Custodrive**, o
+  trascina i file sull'**icona di Custodrive nel Dock**. I file finiscono
+  nella cartella aperta nell'app.
+- Ogni file viene **riletto dal disco e confrontato** (SHA-256) con
+  l'originale prima di comparire con il suo nome.
+- **File già presenti**: Custodrive chiede se **sostituirli** o
+  **saltarli**. Il vecchio file resta finché il nuovo non è stato verificato.
+- Le **copie grandi** avanzano a lotti (1000 file o 8 GB alla volta), con
+  una sola barra, la velocità e il tempo rimanente.
+
+<p align="center">
+  <img src="docs/images/04-copy-progress.png" width="780" alt="Copia in corso con barra di avanzamento, tempo rimanente e pulsante Annulla">
+</p>
+
+### Organizzare
+- **Nuova cartella** (⇧⌘N): viene creata e il nome è subito pronto da
+  scrivere.
+- **Rinomina**: seleziona e premi Invio, poi scrivi direttamente
+  nell'elenco. Puoi cambiare anche solo maiuscole e minuscole.
+- **Sposta**: trascina elementi sopra una cartella, oppure ⌘X e poi ⌘V
+  nella cartella di destinazione. È immediato, i dati non vengono ricopiati.
+- **Elimina** (⌘⌫): file e cartelle con tutto il contenuto. Su NTFS non c'è
+  un Cestino, quindi Custodrive chiede sempre conferma.
+- **Menu contestuale** con il tasto destro, con tutte le azioni.
+
+<p align="center">
+  <img src="docs/images/05-delete-confirm.png" width="260" alt="Conferma di eliminazione">
+</p>
+
+### Coda e annullamento
+- Quello che trascini mentre una copia è in corso si mette **in coda**
+  sotto la stessa barra.
+- **Annulla** ferma la copia in modo sicuro:
+  - il lotto in corso viene tolto e il disco resta pulito;
+  - i lotti già completati restano sul disco, verificati;
+  - la coda viene svuotata.
+
+## Come ti protegge
+
+Custodrive non «spera» che vada tutto bene: ogni operazione è costruita
+perché un'interruzione non faccia danni.
+
+1. **Il disco viene segnato «da controllare»** (dirty bit di NTFS) prima di
+   ogni modifica. Il segno viene tolto solo quando l'operazione è finita e
+   verificata. Se il cavo si stacca a metà, Windows vede il segno e ripara il
+   disco con `chkdsk`.
+2. **Niente viene sovrascritto sul posto.** I file nuovi vengono scritti a
+   parte e riletti; solo dopo prendono il loro nome. Una sostituzione tiene
+   da parte il vecchio file finché il nuovo non è al suo posto.
+3. **Un diario di recupero** registra sostituzioni, spostamenti e rinomine.
+   Se vengono interrotti, dopo `chkdsk` Custodrive li completa, o li annulla,
+   da solo: sotto quel nome trovi sempre il file vecchio o il nuovo, mai
+   nessuno dei due.
+4. **Dischi a rischio rifiutati.** Custodrive non scrive su dischi con
+   Windows in ibernazione o Avvio rapido, con il journal non chiuso o già da
+   controllare, e spiega il motivo.
+5. **File di sistema protetti.** `$MFT`, `System Volume Information`,
+   junction, link simbolici e file cifrati non vengono mai toccati né
+   seguiti.
+
+Questo comportamento è collaudato con migliaia di interruzioni simulate
+(tagli di corrente a ogni singola scrittura), con decine di dischi
+verificati da `chkdsk` su Windows 11, e su chiavette USB reali, anche
+staccate a metà copia. Il dettaglio è in
+[docs/piano-scrittura-v1.md](docs/piano-scrittura-v1.md).
+
+## Scorciatoie
+
+| Azione | Tasti |
+|---|---|
+| Apri cartella o file | doppio clic, ⌘↓ |
+| Cartella superiore | ⌘↑ |
+| Indietro / Avanti | ⌘[ / ⌘] |
+| Quick Look | Spazio |
+| Rinomina | Invio |
+| Nuova cartella | ⇧⌘N |
+| Copia qui file dal Mac | ⇧⌘O |
+| Taglia (per spostare) / Incolla | ⌘X / ⌘V |
+| Elimina | ⌘⌫ |
+
+## Problemi comuni
+
+**«Windows non ha chiuso correttamente il disco (journal NTFS aperto)».**
+Il disco è stato staccato da Windows senza rimozione sicura. Ricollegalo a
+Windows, usa **Rimozione sicura dell'hardware**, poi riprova sul Mac.
+
+**«Windows è in ibernazione o con Avvio rapido attivo».** Spegni Windows
+completamente (non solo sospensione), oppure disattiva l'Avvio rapido.
+
+**«Il disco va controllato su Windows».** Un'operazione è stata
+interrotta. Collega il disco a un PC Windows, apri il Prompt dei comandi
+come amministratore ed esegui `chkdsk X: /f`, dove X è la lettera del disco.
+Poi torna su Custodrive, che completa da solo quello che era rimasto a
+metà. **Se Windows propone di formattare il disco, rifiuta**: basta
+`chkdsk`.
+
+**Non vedo il disco nel Finder.** Durante la modifica attiva il disco è
+riservato a Custodrive: premi **Termina modifiche**.
+
+## Requisiti e limiti
+
+- Mac con chip Apple (M1 o successivi), macOS 15.4 o successivo.
+- Dischi e chiavette **NTFS** esterni. Per APFS, exFAT e FAT usa il Finder.
+- La scrittura avviene dentro Custodrive, non direttamente dal Finder: il
+  Finder vede il disco in sola lettura.
+- Non si modificano file «sul posto» (per esempio aprire un documento sul
+  disco e salvarlo): si copia, si sostituisce, si sposta.
+- File NTFS compressi o cifrati non vengono scritti.
+
+## In arrivo
+
+Custodrive vuole diventare il custode dei tuoi dischi, non solo un ponte
+verso NTFS. Prossime funzioni previste:
+
+- **Clonazione** di dischi e chiavette, per avere sempre una copia pronta
+  se un'unità si guasta.
+- **Sincronizzazione** tra un disco e una cartella del Mac (o un altro
+  disco), con verifica dei contenuti.
+- **Controllo di salute** delle unità, per accorgersi in tempo di quelle
+  che stanno per cedere.
+
+## Per sviluppatori
 
 ```sh
-sudo Build/OpenHDDCopy --disk disk4s1 [--dir "Cartella/Sotto"] [--replace] FILE1 "Nome 1" FILE2 "Nome 2"
-sudo Build/OpenHDDCopy --disk disk4s1 --manifest ELENCO   # cartelle intere (formato in --help)
-sudo Build/OpenHDDCopy --check-disk disk4s1        # controllo in sola lettura
+Scripts/build-local-app.sh    # compila Build/Custodrive.app
+Scripts/package-app.sh        # crea Build/Custodrive-1.0.0.dmg da condividere
 ```
 
-## Collaudo della scrittura
-
-| Gate | Prova | Esito (28 settembre 2026) |
-|---|---|---|
-| V1 | `Tests/run-direct-copy-probe.sh`: dirty bit a ogni confine, crash, errori I/O, disco pieno, batch, nomi Unicode e NFD→NFC, cartelle, duplicati senza distinzione maiuscole, pulizia dei temporanei | PASS |
-| V1 | `Tests/run-powercut-campaign.sh`: taglio di corrente con cache volatile a **ogni** scrittura di una copia, 4 semi, strappi a 512 B e 4 KiB (680 casi) | PASS: 0 volumi "puliti ma alterati" |
-| V2 | `Tests/prepare-windows-v1-cases.sh` + `Tests/windows/verify-v1-cases.ps1` su una base formattata da Windows 11 (build 26200): copia completata, 3 interruzioni a stadi precisi, 18 tagli di corrente | **22/22 PASS**: copia completata con `chkdsk` pulito; ogni interruzione riparata da `chkdsk /f`, secondo `chkdsk` pulito, file preesistenti intatti al loro posto |
-| V3 | Copia su un disco collegato a macOS (`hdiutil`) con la CLI e **dall'interfaccia dell'app** (selezione disco, scelta file, destinazione, conferma), rimontaggio in sola lettura, poi verifica su Windows | PASS: `chkdsk` pulito, hash corretti |
-| V4 | Chiavetta USB 2.0 reale (`USB DISK 2.0`, 3,9 GB) formattata da Windows: copie da 1,5 GB, scollegamento fisico durante la scrittura, riparazione su Windows, ripresa dal Mac | **PASS** (28 settembre 2026): dopo lo scollegamento Windows vede il volume da controllare, `chkdsk` non trova incoerenze, nessun file a metà pubblicato; la copia successiva pulisce e completa; controllo finale `chkdsk` pulito e tutti gli hash corretti |
-
-I test su immagini non sostituiscono il collaudo sull'hardware reale: il
-controller USB può riordinare o perdere scritture in modi che il simulatore non
-riproduce.
-
-### Checklist V4 (USB sacrificabile)
-
-1. Formatta la chiavetta NTFS su Windows, aggiungi alcuni file e annota gli
-   hash (`Get-FileHash`). Espelli.
-2. Sul Mac copia con OpenHDD un file piccolo e uno da qualche GiB. Controlla gli
-   hash nel Finder o con `shasum -a 256`. Su Windows: `chkdsk X:` deve essere
-   pulito e gli hash devono coincidere.
-3. Avvia una copia da qualche GiB e scollega la chiavetta a metà. L'app deve
-   dire «Copia non completata». Su Windows il disco deve risultare da
-   controllare (`fsutil dirty query X:`). `chkdsk X: /f`, poi `chkdsk X:`
-   pulito; i file iniziali devono avere gli stessi hash.
-4. Ricollega al Mac e copia un altro file: OpenHDD deve rimuovere il temporaneo
-   rimasto e completare la copia.
-
-## Storia e ricerca
-
-La prima prova di scollegamento del 27 settembre, con il vecchio motore senza
-dirty bit, aveva lasciato `$Bitmap` incoerente senza che Windows lo sapesse:
-[analisi forense](docs/analisi-guasto-bitmap-ntfs-2026-09-27.md). La
-[specifica transazionale](docs/specifica-recupero-transazionale-ntfs.md) resta
-come fase 2, per un recupero via journal `$LogFile` senza `chkdsk`, insieme al
-laboratorio in `Tests/windows/` (`verify-journal-recovery.ps1`,
-`acquire-logfile-replay_claude.ps1`, `export-vhd-partition.ps1`) e a
-`Tests/run-journal-probe.sh`. Non blocca la v1.
-
-## Variante FSKit (richiede firma Apple Developer)
-
-App macOS per aprire manualmente partizioni NTFS esterne **in sola lettura**. Target: Apple Silicon, macOS 15.4 o successivo. Questa fase non contiene operazioni NTFS di scrittura, riparazione, replay del journal o formattazione.
-
-### Stato verificato
-
-- Progetto Xcode arm64 compilato con Xcode 27 e deployment target 15.4.
-- NTFS-3G 2026.7.7 verificato contro archivio upstream e compilato come libreria statica. Provenienza e licenza: [vendor/README.md](vendor/README.md).
-- Test dell'adattatore su immagini NTFS sacrificabili: file normale, vuoto, Unicode e 2 MiB di dati confrontati byte per byte; avvisi per dirty bit e ibernazione simulata; SHA-256 invariato dopo ogni lettura; zero chiamate di scrittura a blocchi; immagine non NTFS rifiutata.
-- Fixture GPT/NTFS generata offline con `Tests/create-runtime-fixture.sh`; macOS 27 l'ha riconosciuta come partizione NTFS esterna in sola lettura. Nessun mount FSKit eseguito.
-- La firma di sviluppo è bloccata su questo Mac: il portachiavi non contiene identità valide e l'account Apple Developer mostra l'iscrizione al programma scaduta. La [tabella Apple per macOS](https://developer.apple.com/help/account/reference/supported-capabilities-macos) indica FSKit Module per Apple Developer Program e Developer ID, non per Apple Developer gratuito. Nessuna estensione è stata attivata.
-- **Non ancora validato su FSKit/Finder né su disco fisico.** Non usare con dati insostituibili finché la matrice sotto non è completata.
-
-### Struttura
-
-- `Sources/OpenHDDApp`: finestra SwiftUI e inventario Disk Arbitration. Nessun mount automatico.
-- `Sources/NTFSExtension`: estensione FSKit. Accetta il caricamento solo con opzione read-only; tutte le operazioni di modifica restituiscono `EROFS`.
-- `Sources/NTFSBridge`: adattatore NTFS-3G con dispositivo a blocchi soltanto leggibile. `write` e `pwrite` restituiscono `EROFS` e incrementano contatori.
-- `Sources/DiskHelper`: helper privilegiato limitato a mount NTFS read-only, unmount del proprio mount ed eject. Rivalida partizione, dimensione e identità del dispositivo. Non accetta percorsi o comandi arbitrari.
-- `Tests`: prova automatica dell'adattatore su immagine temporanea; non tocca dischi esterni.
-
-### Build
-
-Prerequisiti: Xcode completo, XcodeGen, certificato e team di sviluppo compatibili con entitlement FSKit. La [matrice Apple](https://developer.apple.com/help/account/reference/supported-capabilities-macos) non include FSKit nel profilo gratuito; occorre una firma idonea prima delle prove runtime. Firma app, estensione e helper con lo stesso Team ID. L'estensione richiede l'entitlement `com.apple.developer.fskit.fsmodule`. Non rimuovere l'entitlement né abbassare la sicurezza di avvio per aggirare una firma mancante.
-
-```sh
-PROJECT_DIR="$PWD" Scripts/build-ntfs3g.sh
-xcodegen generate
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project OpenHDD.xcodeproj -scheme OpenHDD -configuration Debug \
-  -derivedDataPath Build/DerivedData CODE_SIGNING_ALLOWED=NO build
-Tests/run-bridge-test.sh
-Tests/create-runtime-fixture.sh Build/runtime-fixture.img
-```
-
-Installare l'app firmata in `/Applications`. In **Impostazioni di sistema > Generali > Elementi login ed estensioni > Estensioni file system**, attivare OpenHDD NTFS. Alla prima richiesta, approvare anche l'helper OpenHDD. La build senza firma serve solo al controllo del codice e **non** abilita FSKit.
-
-### Uso previsto
-
-Selezionare una partizione esterna. Per NTFS, premere **Apri in sola lettura**: l'helper esegue una verifica strutturale limitata, smonta normalmente un eventuale mount macOS, poi chiede il mount FSKit read-only. Se il mount fallisce, prova a ripristinare quello macOS in sola lettura e mostra l'esito. Con il volume montato, usare **Apri nel Finder** e poi **Espelli**. Per APFS/exFAT/FAT/HFS, il mount rimane affidato a macOS.
-
-Dirty bit, sospetto journal e stato di ibernazione incerto producono avvisi: il controllo non è una riparazione né un fsck completo. File NTFS cifrati e reparse point non sono letti dall'adattatore.
-
-### Prove necessarie prima di dichiarare conclusa la fase 1
-
-Usare **solo immagini e unità sacrificabili**. Registrare per ogni prova sistema, Mac, build, hash prima/dopo, stato del mount ed esito osservato.
-
-1. Attivazione estensione e helper firmati; mount manuale in `/Volumes` su M1/macOS 15.4 e su un secondo Apple Silicon; lettura Finder e Terminale.
-2. File piccoli, grandi, vuoti, Unicode, sparsi e compressi: confronto dimensioni e hash con copie note. Il test automatico attuale non copre ancora file NTFS sparsi e compressi.
-3. Creazione, sovrascrittura, rename, cancellazione e modifica attributi da Finder e Terminale: ogni operazione deve fallire con filesystem read-only. Controllare zero scritture a blocchi durante mount, lettura, errore ed eject, più hash dell'intera immagine invariato.
-4. Volume dirty, ibernato, danneggiato e non NTFS: avviso o rifiuto coerente, nessuna riparazione automatica. Ripetere con dispositivo occupato, scollegamento durante lettura, estensione terminata e identità cambiata.
-5. Fallimento del nuovo mount dopo smontaggio nativo: verificare il tentativo di ripristino read-only e il messaggio preciso. Verificare eject normale senza forza.
-6. Controllare che log applicativi non contengano nomi o contenuti dei file. La build con target 15.4 non sostituisce la prova runtime su 15.4.
-
-Finché queste prove non passano, **OpenHDD resta prototipo non adatto a dati importanti**.
-
-I due processi registrano solo `block_write_attempts=<numero>` nei sottosistemi `it.openhdd.app.ntfs` e `it.openhdd.app.helper`, categoria `integrity`. Durante il collaudo, filtrare questi eventi con `log show --predicate '(subsystem == "it.openhdd.app.ntfs" || subsystem == "it.openhdd.app.helper") && category == "integrity"'`; ogni valore deve essere zero. Nessun nome o contenuto dei file viene registrato dal codice OpenHDD.
+Build, motore da riga di comando, test automatici, collaudo su Windows e
+storia del progetto: [docs/sviluppo.md](docs/sviluppo.md). Il motore NTFS si
+basa su [NTFS-3G](vendor/README.md).
