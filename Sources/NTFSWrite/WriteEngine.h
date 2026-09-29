@@ -90,6 +90,28 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
 void oh_request_cancel(void);
 int oh_cancel_requested(void);
 
+/* Read-only browsing for an edit session: list folders and export files
+   through the same exclusive descriptor the session writes with. A view
+   must be closed before any write and reopened afterwards. */
+typedef struct OHView OHView;
+typedef struct {
+    int kind;             /* 1 = file, 2 = folder */
+    int special;          /* junction, symbolic link or encrypted */
+    uint64_t size;
+    int64_t modified_ns;  /* since 1970 */
+} OHEntryInfo;
+typedef int (*OHViewEntry)(void *context, const char *name, const OHEntryInfo *info);
+int oh_view_open(int target_fd, uint64_t target_size, int is_device,
+                 OHView **view, uint32_t *safety_warnings);
+/* Lists `path` ("" for the root); names come back NFC. NTFS system files,
+   System Volume Information and OpenHDD's own entries are not listed. */
+int oh_view_list(OHView *view, const char *path, OHViewEntry callback, void *context);
+/* Copies the file at `path` into out_fd (already open for writing). */
+int oh_view_export(OHView *view, const char *path, int out_fd, uint64_t *copied);
+void oh_view_close(OHView *view);
+/* Clears a stop request once the operation it was meant for has ended. */
+void oh_reset_cancel(void);
+
 /* Short description of the last low-level failure, or "" when none. */
 const char *oh_last_error(void);
 int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,

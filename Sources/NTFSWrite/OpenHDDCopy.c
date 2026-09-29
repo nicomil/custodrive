@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -354,6 +355,7 @@ typedef struct {
     const char *directory;       /* NFC, or NULL for the root */
     const char *progress_path;
     int assume_confirmed;
+    int session;                 /* --session: commands on stdin until "end" */
     int eject;
     long owner_uid;              /* -1 when unknown */
     size_t count;
@@ -380,6 +382,7 @@ typedef struct {
 } ProgressFile;
 
 static int confirm_disk(DiskLease *lease, const char *name);
+static int run_session(int fd, uint64_t size, int is_device, long owner_uid);
 
 /* Converts a UTF-8 argument to NFC, the form Windows tools expect. */
 static char *normalized_copy(const char *value)
@@ -758,6 +761,10 @@ static int run_image(CopyRequest *request)
         fputs("Refused: image or source changed.\n", stderr);
         goto out;
     }
+    if (request->session) {
+        result = run_session(target, (uint64_t)after.st_size, 0, -1) ? 1 : 0;
+        goto out;
+    }
     ProgressFile progress = { .fd = open_progress(request->progress_path, -1),
                               .count = request->count, .last_phase = -1 };
     size_t removed = 0;
@@ -774,7 +781,7 @@ out:
         fputs("Image close failed; no success reported.\n", stderr);
         result = 1;
     }
-    if (!result) print_pass(request, "");
+    if (!result && !request->session) print_pass(request, "");
     return result;
 }
 
@@ -1036,16 +1043,27 @@ static int run_disk(CopyRequest *request)
         goto out;
     }
     quarantine_active = 1;
+    int code = 0;
+    if (request->session) {
+        /* The marker stays only if a write left the volume marked. */
+        wrote = 1;
+        if (run_session(target, lease.size, 1, owner_uid)) {
+            fputs("The edit session ended with the volume marked for checking. "
+                  "Connect it to Windows and run chkdsk X: /f.\n", stderr);
+            goto out;
+        }
+    } else {
     ProgressFile progress = {
         .fd = open_progress(request->progress_path, owner_uid),
         .count = request->count, .last_phase = -1 };
     size_t removed = 0;
-    int code = run_engine(request, owner_uid, target, lease.size, 1, &progress,
-                          &failed, &stage, &warnings, &removed);
+    code = run_engine(request, owner_uid, target, lease.size, 1, &progress,
+                      &failed, &stage, &warnings, &removed);
     if (removed)
         fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
                         "interrupted copy.\n", removed);
     if (progress.fd >= 0) close(progress.fd);
+    }
     if (code) {
         if (stage == 1 && !quarantine_clear(quarantine_dir, quarantine_file))
             quarantine_active = 0; /* preflight never enters RW mount */
@@ -1097,7 +1115,10 @@ out:
         } else quarantine_active = 0;
     }
     if (quarantine_dir >= 0) close(quarantine_dir);
-    if (!result) print_pass(request, request->eject ? " and ejected" : "");
+    if (!result && request->session)
+        fprintf(stderr, "Edit session ended; volume clean%s.\n",
+                request->eject ? " and ejected" : " and mounted read-only again");
+    else if (!result) print_pass(request, request->eject ? " and ejected" : "");
     else fputs("NO SUCCESS: see the message above.\n", stderr);
     lease_close(&lease);
     return result;
@@ -1361,6 +1382,40 @@ invalid:
     return -1;
 }
 
+/* Fills the edits of a request from command-line style arguments:
+   delete PATH..., rename PATH NAME, mkdir PARENT NAME, move DEST PATH... */
+static int build_edits(CopyRequest *request, int kind, char *const *args, int count)
+{
+    size_t wanted = kind == OH_EDIT_DELETE || kind == OH_EDIT_MOVE ? 0 : 2;
+    if (count < (kind == OH_EDIT_MOVE ? 2 : 1) || (wanted && count != (int)wanted))
+        return EINVAL;
+    request->edit_kind = kind;
+    request->edit_count = kind == OH_EDIT_DELETE ? (size_t)count :
+                          kind == OH_EDIT_MOVE ? (size_t)count - 1 : 1;
+    request->edits = calloc(request->edit_count, sizeof(*request->edits));
+    request->edit_strings = calloc((size_t)count, sizeof(char *));
+    if (!request->edits || !request->edit_strings) return ENOMEM;
+    for (int i = 0; i < count; ++i) {
+        /* paths are relative to the root */
+        char *copy = relative_copy(args[i]);
+        if (!copy) return EINVAL;
+        request->edit_strings[request->edit_string_count++] = copy;
+    }
+    for (size_t i = 0; i < request->edit_count; ++i) {
+        request->edits[i].kind = kind;
+        if (kind == OH_EDIT_DELETE) {
+            request->edits[i].path = request->edit_strings[i];
+        } else if (kind == OH_EDIT_MOVE) {
+            request->edits[i].path = request->edit_strings[i + 1];
+            request->edits[i].name = request->edit_strings[0];
+        } else {
+            request->edits[i].path = request->edit_strings[0];
+            request->edits[i].name = request->edit_strings[1];
+        }
+    }
+    return 0;
+}
+
 /* Each file of a batch stays open until the batch is published; the
    default limit of 256 descriptors is raised as far as allowed. */
 static void raise_file_limit(void)
@@ -1382,6 +1437,318 @@ static void raise_file_limit(void)
     #endif
 }
 
+/* ------------------------------------------------------------------------ */
+/* Edit session: one authorization, one unmount, many verified operations   */
+/* ------------------------------------------------------------------------ */
+
+/* Messages are lists of NUL-terminated fields; the first field is the
+   number of fields that follow. Requests arrive on stdin, replies go to
+   stdout, one reply per request. */
+typedef struct {
+    char **fields;
+    size_t count, capacity;
+} Message;
+
+static void message_free(Message *message)
+{
+    for (size_t i = 0; i < message->count; ++i) free(message->fields[i]);
+    free(message->fields);
+    *message = (Message){ 0 };
+}
+
+static int message_add(Message *message, const char *value)
+{
+    if (message->count == message->capacity) {
+        size_t capacity = message->capacity ? message->capacity * 2 : 16;
+        char **grown = realloc(message->fields, capacity * sizeof(*grown));
+        if (!grown) return -1;
+        message->fields = grown;
+        message->capacity = capacity;
+    }
+    char *copy = strdup(value ? value : "");
+    if (!copy) return -1;
+    message->fields[message->count++] = copy;
+    return 0;
+}
+
+static int message_addf(Message *message, const char *format, ...)
+{
+    char buffer[64];
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(buffer, sizeof(buffer), format, arguments);
+    va_end(arguments);
+    return message_add(message, buffer);
+}
+
+static int read_field(char **field)
+{
+    size_t capacity = 0;
+    *field = NULL;
+    ssize_t length = getdelim(field, &capacity, '\0', stdin);
+    if (length <= 0 || (*field)[length - 1] != '\0') {
+        free(*field);
+        *field = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* Returns -1 at end of input (the app is gone: end the session). */
+static int read_message(Message *message)
+{
+    char *count_field = NULL;
+    *message = (Message){ 0 };
+    if (read_field(&count_field)) return -1;
+    char *end = NULL;
+    unsigned long count = strtoul(count_field, &end, 10);
+    int valid = end && !*end && count >= 1 && count <= 200000;
+    free(count_field);
+    if (!valid) return -1;
+    for (unsigned long i = 0; i < count; ++i) {
+        char *field = NULL;
+        if (read_field(&field)) { message_free(message); return -1; }
+        if (message_add(message, field)) { free(field); message_free(message); return -1; }
+        free(field);
+    }
+    return 0;
+}
+
+static void send_message(const Message *message)
+{
+    printf("%zu", message->count);
+    fputc('\0', stdout);
+    for (size_t i = 0; i < message->count; ++i) {
+        fputs(message->fields[i], stdout);
+        fputc('\0', stdout);
+    }
+    fflush(stdout);
+}
+
+/* Diagnostics of one command are captured from stderr and returned in the
+   reply, so the app shows the reason next to the operation. */
+typedef struct {
+    int saved;
+    FILE *file;
+} Capture;
+
+static void capture_begin(Capture *capture)
+{
+    fflush(stderr);
+    capture->file = tmpfile();
+    capture->saved = capture->file ? dup(STDERR_FILENO) : -1;
+    if (capture->saved >= 0) dup2(fileno(capture->file), STDERR_FILENO);
+}
+
+static char *capture_end(Capture *capture)
+{
+    fflush(stderr);
+    char *text = NULL;
+    if (capture->saved >= 0) {
+        dup2(capture->saved, STDERR_FILENO);
+        close(capture->saved);
+        long length = ftell(capture->file);
+        if (length >= 0 && (text = malloc((size_t)length + 1))) {
+            rewind(capture->file);
+            size_t got = fread(text, 1, (size_t)length, capture->file);
+            text[got] = 0;
+        }
+    }
+    if (capture->file) fclose(capture->file);
+    return text ? text : strdup("");
+}
+
+typedef struct {
+    int fd;
+    uint64_t size;
+    int is_device;
+    long owner_uid;
+    OHView *view;
+    int marked; /* a write left the volume marked for checking */
+} Session;
+
+static int add_entry(void *opaque, const char *name, const OHEntryInfo *info)
+{
+    Message *reply = opaque;
+    if (message_add(reply, name) ||
+        message_addf(reply, "%d", info->kind) ||
+        message_addf(reply, "%llu", (unsigned long long)info->size) ||
+        message_addf(reply, "%lld", (long long)info->modified_ns) ||
+        message_addf(reply, "%d", info->special)) return ENOMEM;
+    return 0;
+}
+
+static void close_view(Session *session)
+{
+    oh_view_close(session->view);
+    session->view = NULL;
+}
+
+static int ensure_view(Session *session)
+{
+    if (session->view) return 0;
+    uint32_t warnings = 0;
+    return oh_view_open(session->fd, session->size, session->is_device,
+                        &session->view, &warnings);
+}
+
+/* Runs one copy or edit exactly like a single invocation would. */
+static int session_write(Session *session, CopyRequest *request, const char *progress_path,
+                         Message *reply)
+{
+    close_view(session);
+    int stage = 0;
+    uint32_t warnings = 0;
+    size_t failed = 0, removed = 0;
+    int code = 0;
+    if (!request->edit_kind && check_sources(request, session->owner_uid)) {
+        code = EBADF;
+        stage = 1;
+    } else {
+        ProgressFile progress = { .fd = open_progress(progress_path, session->owner_uid),
+                                  .count = request_items(request), .last_phase = -1 };
+        code = run_engine(request, session->owner_uid, session->fd, session->size,
+                          session->is_device, &progress, &failed, &stage, &warnings,
+                          &removed);
+        if (progress.fd >= 0) close(progress.fd);
+    }
+    if (removed)
+        fprintf(stderr, "Removed %zu OpenHDD temporary file(s) left by an earlier "
+                        "interrupted copy.\n", removed);
+    if (code) {
+        if (code != EBADF) explain_failure(code, stage, failed, request_items(request), warnings);
+        if (stage >= 2) session->marked = 1;
+        message_add(reply, "error");
+        message_addf(reply, "%d", code);
+        message_addf(reply, "%d", stage);
+    } else {
+        if (request->edit_kind)
+            fprintf(stderr, "PASS: %zu change(s) applied, verified; volume clean.\n",
+                    request->edit_count);
+        else
+            fprintf(stderr, "PASS: %zu file(s) and %zu folder(s) copied, independently "
+                            "verified; volume clean.\n", request->count,
+                    request->directory_count);
+        message_add(reply, "ok");
+    }
+    return code;
+}
+
+static void session_command(Session *session, const Message *request, Message *reply)
+{
+    const char *command = request->fields[0];
+    char **args = request->fields + 1;
+    int count = (int)request->count - 1;
+    if (!strcmp(command, "list") && count == 1) {
+        int status = ensure_view(session);
+        char *path = status ? NULL : relative_copy(args[0]);
+        if (!status && !path) status = EINVAL;
+        Message entries = { 0 };
+        if (!status) status = oh_view_list(session->view, path, add_entry, &entries);
+        free(path);
+        if (status) {
+            message_add(reply, "error");
+            message_addf(reply, "%d", status);
+            message_add(reply, "0");
+            message_free(&entries);
+            if (status == EIO) close_view(session);
+            return;
+        }
+        message_add(reply, "ok");
+        for (size_t i = 0; i < entries.count; ++i) message_add(reply, entries.fields[i]);
+        message_free(&entries);
+        return;
+    }
+    if (!strcmp(command, "export") && count == 2) {
+        int status = ensure_view(session);
+        char *path = status ? NULL : relative_copy(args[0]);
+        if (!status && !path) status = EINVAL;
+        int out = status ? -1 : open(args[1], O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
+                                     O_CLOEXEC, 0600);
+        if (!status && out < 0) status = errno;
+        uint64_t copied = 0;
+        if (!status) status = oh_view_export(session->view, path, out, &copied);
+        if (out >= 0 && close(out) && !status) status = EIO;
+        if (status && out >= 0) unlink(args[1]);
+        free(path);
+        message_add(reply, status ? "error" : "ok");
+        message_addf(reply, "%d", status);
+        return;
+    }
+    if (!strcmp(command, "copy") && count == 2) {
+        CopyRequest copy = { .owner_uid = session->owner_uid };
+        if (load_manifest(&copy, args[0])) {
+            message_add(reply, "error");
+            message_addf(reply, "%d", EINVAL);
+            message_add(reply, "1");
+        } else {
+            session_write(session, &copy, args[1], reply);
+        }
+        request_free(&copy);
+        return;
+    }
+    int kind = !strcmp(command, "delete") ? OH_EDIT_DELETE :
+               !strcmp(command, "rename") ? OH_EDIT_RENAME :
+               !strcmp(command, "mkdir") ? OH_EDIT_MKDIR :
+               !strcmp(command, "move") ? OH_EDIT_MOVE : 0;
+    if (kind && count >= 2) {
+        /* First argument: progress file; the rest as on the command line. */
+        CopyRequest edit = { .owner_uid = session->owner_uid };
+        int status = build_edits(&edit, kind, args + 1, count - 1);
+        if (status) {
+            fputs("Refused: invalid request.\n", stderr);
+            message_add(reply, "error");
+            message_addf(reply, "%d", status);
+            message_add(reply, "1");
+        } else {
+            session_write(session, &edit, args[0], reply);
+        }
+        request_free(&edit);
+        return;
+    }
+    fputs("Refused: unknown session command.\n", stderr);
+    message_add(reply, "error");
+    message_addf(reply, "%d", EINVAL);
+    message_add(reply, "1");
+}
+
+/* Serves commands until "end" or end of input; returns nonzero when a
+   write left the volume marked for checking. */
+static int run_session(int fd, uint64_t size, int is_device, long owner_uid)
+{
+    Session session = { .fd = fd, .size = size, .is_device = is_device,
+                        .owner_uid = owner_uid };
+    Message ready = { 0 };
+    message_add(&ready, "ready");
+    send_message(&ready);
+    message_free(&ready);
+    for (;;) {
+        Message request;
+        if (read_message(&request)) break;
+        if (!strcmp(request.fields[0], "end")) {
+            message_free(&request);
+            break;
+        }
+        Message reply = { 0 };
+        Capture capture;
+        capture_begin(&capture);
+        session_command(&session, &request, &reply);
+        char *text = capture_end(&capture);
+        message_add(&reply, text);
+        free(text);
+        send_message(&reply);
+        message_free(&reply);
+        message_free(&request);
+        oh_reset_cancel();
+    }
+    close_view(&session);
+    Message done = { 0 };
+    message_add(&done, "ended");
+    send_message(&done);
+    message_free(&done);
+    return session.marked;
+}
+
 static int parse_uid(const char *text, long *out)
 {
     char *end = NULL;
@@ -1398,7 +1765,7 @@ int main(int argc, char **argv)
         return run_check_disk(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "--check-image"))
         return run_check_image(argv[2]);
-    if (argc < 5 || (strcmp(argv[1], "--image") && strcmp(argv[1], "--disk"))) {
+    if (argc < 4 || (strcmp(argv[1], "--image") && strcmp(argv[1], "--disk"))) {
         usage();
         return 2;
     }
@@ -1420,6 +1787,7 @@ int main(int argc, char **argv)
         if (!strcmp(option, "--yes") && disk) request.assume_confirmed = 1;
         else if (!strcmp(option, "--eject") && disk) request.eject = 1;
         else if (!strcmp(option, "--replace")) request.replace_all = 1;
+        else if (!strcmp(option, "--session")) request.session = 1;
         else if (!strcmp(option, "--manifest") && index + 1 < argc && !manifest)
             manifest = argv[++index];
         else if (!strcmp(option, "--dir") && index + 1 < argc && !request.directory) {
@@ -1436,35 +1804,21 @@ int main(int argc, char **argv)
         else { usage(); request_free(&request); return 2; }
     }
     int remaining = argc - index;
-    if (request.edit_kind) {
-        int kind = request.edit_kind;
-        size_t wanted = kind == OH_EDIT_DELETE || kind == OH_EDIT_MOVE ? 0 : 2;
-        if (remaining < (kind == OH_EDIT_MOVE ? 2 : 1) ||
-            (wanted && remaining != (int)wanted) || manifest || request.replace_all) {
+    if (request.session) {
+        if (remaining || manifest || request.edit_kind || request.replace_all) {
             usage(); request_free(&request); return 2;
         }
-        request.edit_count = kind == OH_EDIT_DELETE ? (size_t)remaining :
-                             kind == OH_EDIT_MOVE ? (size_t)remaining - 1 : 1;
-        request.edits = calloc(request.edit_count, sizeof(*request.edits));
-        request.edit_strings = calloc((size_t)remaining, sizeof(char *));
-        if (!request.edits || !request.edit_strings) { request_free(&request); return 1; }
-        for (int i = 0; i < remaining; ++i) {
-            /* paths are relative to the root */
-            char *copy = relative_copy(argv[index + i]);
-            if (!copy) { request_free(&request); return 2; }
-            request.edit_strings[request.edit_string_count++] = copy;
-        }
-        for (size_t i = 0; i < request.edit_count; ++i) {
-            request.edits[i].kind = kind;
-            if (kind == OH_EDIT_DELETE) {
-                request.edits[i].path = request.edit_strings[i];
-            } else if (kind == OH_EDIT_MOVE) {
-                request.edits[i].path = request.edit_strings[i + 1];
-                request.edits[i].name = request.edit_strings[0];
-            } else {
-                request.edits[i].path = request.edit_strings[0];
-                request.edits[i].name = request.edit_strings[1];
-            }
+        int result = disk ? run_disk(&request) : run_image(&request);
+        request_free(&request);
+        return result;
+    }
+    if (request.edit_kind) {
+        if (manifest || request.replace_all) { usage(); request_free(&request); return 2; }
+        int status = build_edits(&request, request.edit_kind, argv + index, remaining);
+        if (status) {
+            if (status == EINVAL) usage();
+            request_free(&request);
+            return status == EINVAL ? 2 : 1;
         }
         int result = disk ? run_disk(&request) : run_image(&request);
         request_free(&request);

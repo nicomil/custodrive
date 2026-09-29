@@ -305,6 +305,99 @@ creazione. Regressione: 300 file piccoli in un lotto solo.
   `.OpenHDD`, i file di controllo sono intatti e la copia precedente
   (390 MB) è integra.
 
+## v4 — esperienza in stile Finder
+
+**Sessione di modifica** (`OpenHDDCopy --disk diskXsY --session`). Lo
+strumento esegue una sola volta autorizzazione, smontaggio, apertura
+esclusiva e marker locale, poi serve i comandi da stdin fino a `end` o alla
+fine dell'input (app chiusa o andata in crash). In quel caso rimonta il disco
+in sola lettura.
+
+Protocollo:
+- ogni messaggio è formato da campi terminati da NUL, e il primo campo è il
+  numero dei successivi;
+- ogni risposta ha come ultimo campo la diagnostica catturata da stderr
+  durante il comando.
+
+Comandi:
+- `list` e `export` passano da una vista in sola lettura sullo stesso
+  descrittore esclusivo, chiusa prima di ogni scrittura;
+- `copy`, `mkdir`, `rename`, `move` e `delete` eseguono esattamente le stesse
+  transazioni delle invocazioni singole: dirty bit, verifica, diario, lotti,
+  annullamento.
+
+Un errore che lascia il volume marcato fa terminare la sessione con esito
+negativo, e il marker locale resta. SIGINT a riposo viene ignorato; durante
+una copia annulla il lotto in corso.
+
+**App.**
+- **Browser**: lista `NSTableView` con colonne ordinabili; dati dal mount in
+  sola lettura di macOS, o dalla sessione quando il disco è in modifica.
+- **Gesti**:
+  - trascinamento dal Finder (copia) e tra cartelle (spostamento);
+  - rinomina nella lista (Invio);
+  - ⌘⌫, ⇧⌘N, ⌘X/⌘V, menu contestuale;
+  - Quick Look (in sessione il file viene esportato in una cartella
+    temporanea, fino a 2 GB).
+- **Coda**: le richieste di copia vengono preparate una alla volta, poi tutte
+  le scritture passano da un'unica coda.
+- **Punto d'ingresso dal Finder**: voce Servizi e file trascinati sull'icona
+  nel Dock, verso la cartella aperta; se ci sono più dischi NTFS senza
+  selezione, l'app chiede.
+- **Finestra unica**, e alla chiusura dell'app la sessione viene terminata
+  con il rimontaggio del disco.
+
+**Collaudo.**
+- `Tests/run-session-probe.sh`:
+  - 11 operazioni con una sola apertura;
+  - elenco ed esportazione;
+  - rifiuti per singolo comando, con la sessione che resta utilizzabile;
+  - fine dell'input;
+  - volume marcato dopo un errore iniettato;
+  - annullamento in sessione e SIGINT a riposo.
+  
+  **PASS**, insieme ai probe v1, v2 e v3.
+- Interfaccia guidata con l'automazione su un'immagine collegata:
+  - sessione;
+  - nuova cartella con rinomina immediata;
+  - rinomina nella lista con un accento;
+  - ⌘X/⌘V con apertura automatica della sessione;
+  - copia dal Dock (file e cartella);
+  - voce Servizi;
+  - ⌘⌫ con conferma;
+  - coda di tre copie;
+  - sostituzione;
+  - Termina modifiche, Espelli con sessione attiva, uscita dall'app con
+    sessione attiva.
+  
+  Dopo tutto questo, volume pulito, nessun residuo, hash giusti, e Windows
+  dà `chkdsk` pulito (**PASS**).
+- Trascinamento e Quick Look non si possono generare con l'automazione, che
+  non crea sessioni di drag AppKit. Li copre `Tests/run-ui-selftest.sh`: una
+  build con `OPENHDD_UI_SELFTEST` (mai inclusa nell'app normale) guida dal
+  proprio interno il data source reale della tabella, con un
+  `NSDraggingInfo` sintetico:
+  - validazione e drop di file del Finder su una cartella (copia);
+  - trascinamento di una riga su una cartella (spostamento);
+  - rifiuto di una cartella trascinata su se stessa;
+  - apertura di Quick Look, verificata come visibile con il file esportato
+    dalla sessione;
+  - fine sessione e rimontaggio.
+  
+  Lo script poi controlla i contenuti e che il volume sia pulito. **PASS.**
+- **Bug trovato dall'auto-test.** Per cartelle sotto percorsi con link
+  simbolici (`/var`, `/tmp`) lo scanner calcolava il percorso relativo
+  togliendo il prefisso come stringa. L'enumeratore restituisce
+  `/private/var/...`, quindi le cartelle risultavano annidate due volte. Il
+  motore rifiutava la copia senza toccare il disco. Ora il percorso relativo
+  usa la profondità dell'enumeratore.
+
+**Prestazioni dell'elenco.** La vista in sola lettura della sessione legge a
+blocchi di 256 KiB e serve da memoria le letture piccole (record MFT, indici).
+È coerente perché la vista viene chiusa prima di ogni scrittura. Per elencare
+3000 voci le letture sul dispositivo scendono da 3197 a 899, e su immagine
+l'elenco richiede circa 0,05 s.
+
 ## Fase 2
 
 La specifica transazionale e il laboratorio `$LogFile` (`Tests/windows/*journal*`,

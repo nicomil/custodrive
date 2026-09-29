@@ -6,15 +6,145 @@ import UniformTypeIdentifiers
 @main
 struct OpenHDDApp: App {
     @StateObject private var disks = DiskStore()
+    #if OPENHDD_LOCAL
+    @NSApplicationDelegateAdaptor(LocalAppDelegate.self) private var delegate
+    #endif
 
     var body: some Scene {
+        #if OPENHDD_LOCAL
+        // One window: files opened from the Dock or the Services menu go to
+        // it instead of opening new windows.
+        Window("Custodrive", id: "main") {
+            LocalBrowserView(store: disks, model: disks.browser)
+                .frame(minWidth: 820, minHeight: 480)
+                .onAppear {
+                    delegate.attach(disks.browser)
+                    #if OPENHDD_UI_SELFTEST
+                    UISelfTest.runIfRequested(disks.browser)
+                    #endif
+                }
+        }
+        .commands {
+            MainWindowCommand(delegate: delegate)
+            CommandGroup(after: .newItem) {
+                Button("Nuova cartella") { disks.browser.newFolder() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Copia qui file dal Mac…") { disks.browser.chooseAndCopy() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+            CommandMenu("Vai") {
+                Button("Indietro") { disks.browser.goBack() }
+                    .keyboardShortcut("[", modifiers: .command)
+                Button("Avanti") { disks.browser.goForward() }
+                    .keyboardShortcut("]", modifiers: .command)
+                Button("Cartella superiore") { disks.browser.goUp() }
+                    .keyboardShortcut(.upArrow, modifiers: .command)
+            }
+        }
+        #else
         WindowGroup {
             ContentView(store: disks)
                 .frame(minWidth: 740, minHeight: 430)
         }
         .windowResizability(.contentSize)
+        #endif
     }
 }
+
+#if OPENHDD_LOCAL
+/// Hands the delegate a way to open the main window.
+struct MainWindowCommand: Commands {
+    let delegate: LocalAppDelegate
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        let open = openWindow
+        let _ = MainActor.assumeIsolated {
+            delegate.openMainWindow = { open(id: "main") }
+        }
+        CommandGroup(after: .windowList) {
+            Button("Finestra principale") { openWindow(id: "main") }
+                .keyboardShortcut("0", modifiers: .command)
+        }
+    }
+}
+
+/// Finder Services, files dropped on the Dock icon, and a clean end of the
+/// edit session when the app quits.
+@MainActor
+final class LocalAppDelegate: NSObject, NSApplicationDelegate {
+    private weak var model: BrowserModel?
+    private var pending: [URL] = []
+    /// Opens the main window; set by the app's commands, which exist even
+    /// when the app was launched by a Services request or a Dock drop and
+    /// SwiftUI did not open a window on its own.
+    var openMainWindow: (() -> Void)?
+
+    func attach(_ model: BrowserModel) {
+        self.model = model
+        if !pending.isEmpty {
+            let urls = pending
+            pending = []
+            // Outside the view update that called attach: the confirmation
+            // is a modal alert and must not run inside it.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { model.incoming(urls) }
+            }
+        }
+    }
+
+    private func deliver(_ urls: [URL]) {
+        let files = urls.filter(\.isFileURL)
+        guard !files.isEmpty else { return }
+        if let model {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { model.incoming(files) }
+            }
+        } else {
+            pending += files
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    if self?.model == nil { self?.openMainWindow?() }
+                }
+            }
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        deliver(urls)
+    }
+
+    /// Services menu: "Copia su disco NTFS con Custodrive".
+    @objc func copyToNTFS(_ pasteboard: NSPasteboard, userData: String?,
+                          error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                          options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if urls.isEmpty { error.pointee = "Nessun file da copiare." as NSString; return }
+        deliver(urls)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, let session = model.session else { return .terminateNow }
+        if model.running != nil {
+            model.alert("Operazione in corso", "Attendi la fine dell'operazione (o premi Annulla) prima di uscire.")
+            return .terminateCancel
+        }
+        // The disk is handed back read-only before the app goes away.
+        DispatchQueue.global().async {
+            _ = session.end()
+            DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: true) }
+        }
+        return .terminateLater
+    }
+}
+#endif
 
 struct DiskRecord: Identifiable {
     let id: String
@@ -163,19 +293,14 @@ final class DiskStore: ObservableObject {
     @Published var selected: String?
     @Published var message: String = "Seleziona una partizione esterna. Nessuna operazione automatica."
     @Published var busy = false
-    @Published var copyProgress: Double?
-    @Published var copyTitle = ""
-    @Published var copyDetail = ""
-    @Published var copyRemaining = ""
-    /// Shown while the chosen folders are walked; nil otherwise.
-    @Published var preparing: String?
-    /// True while a copy (not an edit) runs: only copies can be cancelled.
-    @Published var canCancel = false
-    private var scanToken: ScanToken?
     @Published private var statusOverrides: [String: String] = [:]
 
     private let session: DASession
     private var byName: [String: DiskRecord] = [:]
+    #if OPENHDD_LOCAL
+    lazy var browser = BrowserModel(disks: self)
+    private var openFinderAfterMount = true
+    #endif
 
     init() {
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
@@ -337,6 +462,11 @@ final class DiskStore: ObservableObject {
         }
         #endif
         message = requestedReadOnly ? "Volume NTFS montato in sola lettura." : "Volume aperto tramite macOS."
+        #if OPENHDD_LOCAL
+        let reveal = openFinderAfterMount
+        openFinderAfterMount = true
+        if !reveal { return }
+        #endif
         NSWorkspace.shared.open(url)
     }
 
@@ -472,437 +602,36 @@ final class DiskStore: ObservableObject {
 
 #if OPENHDD_LOCAL
 extension DiskStore {
-    func canCopy(_ record: DiskRecord?) -> Bool {
-        guard let record else { return false }
-        return record.isNTFS && record.isExternal && !busy
+    /// A short state shown next to the disk; nil restores the mount state.
+    func setOverride(_ bsdName: String, _ text: String?) {
+        statusOverrides[bsdName] = text
     }
 
-    /// Asks for files or folders, then continues like a drop.
-    func beginCopy() {
-        guard let record = currentSelection(), canCopy(record) else { return }
-        let panel = NSOpenPanel()
-        panel.title = "Scegli file o cartelle da copiare su «\(record.name)»"
-        panel.prompt = "Avanti"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-        startCopy(panel.urls, to: record)
-    }
-
-    /// Files dragged from the Finder onto a disk row (or the list).
-    func drop(_ providers: [NSItemProvider], on target: DiskRecord?) -> Bool {
-        guard let record = target ?? currentSelection(), canCopy(record) else { return false }
-        let wanted = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
-        guard !wanted.isEmpty else { return false }
-        selected = record.id
-        let group = DispatchGroup()
-        let collected = DroppedURLs()
-        for provider in wanted {
-            group.enter()
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url, url.isFileURL { collected.append(url) }
-                group.leave()
-            }
-        }
-        group.notify(queue: .main) { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let urls = collected.all
-                if urls.isEmpty {
-                    self.alert("Niente da copiare", "Trascina file o cartelle dal Finder.")
-                } else {
-                    self.startCopy(urls, to: record)
-                }
-            }
-        }
-        return true
-    }
-
-    /// Destination, walk of the folders (off the main thread), comparison
-    /// with the volume, choices about existing files, confirmation.
-    private func startCopy(_ sources: [URL], to record: DiskRecord) {
-        guard canCopy(record), let destination = chooseDestination(record) else { return }
-        busy = true
-        message = ""
-        preparing = "Preparazione dell'elenco dei file…"
-        let token = ScanToken()
-        scanToken = token
-        let mount = record.mountURL
-        Task.detached { [store = self] in
-            var scan = CopyScanner.scan(sources, into: destination, token: token) { files, bytes in
-                let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
-                Task { @MainActor in
-                    if store.preparing != nil {
-                        store.preparing = "Preparazione dell'elenco: \(files) file trovati (\(size))…"
-                    }
-                }
-            }
-            if !scan.cancelled, let mount {
-                await MainActor.run { store.preparing = "Confronto con i file già presenti sul disco…" }
-                CopyScanner.compare(&scan, mount: mount)
-            }
-            let result = scan
-            await MainActor.run {
-                store.busy = false
-                store.preparing = nil
-                store.scanToken = nil
-                if result.cancelled || token.isCancelled {
-                    store.message = "Preparazione annullata: nessuna modifica al disco."
-                } else {
-                    store.message = ""
-                    store.confirmCopy(result, destination: destination, record: record)
-                }
-            }
-        }
-    }
-
-    /// Stops the walk through folders, or asks the running copy to stop at
-    /// a safe point (the batch in progress is undone, the disk left clean).
-    func cancelOperation() {
-        if let token = scanToken {
-            token.cancel()
-            preparing = "Annullamento…"
-        } else if canCancel {
-            canCancel = false
-            copyDetail = "Annullamento in corso: i file del lotto in corso vengono rimossi…"
-            NTFSCopyRunner.running.interrupt()
-        }
-    }
-
-    private func listed(_ items: [String], limit: Int = 8) -> String {
-        items.prefix(limit).map { "• \($0)" }.joined(separator: "\n") +
-            (items.count > limit ? "\n… e altri \(items.count - limit)" : "")
-    }
-
-    private func confirmCopy(_ scan: CopyScan, destination: String, record: DiskRecord) {
-        guard scan.problems.isEmpty else {
-            alert("Alcuni elementi non possono essere copiati così",
-                  listed(scan.problems, limit: 10) + "\n\nSistemali sul Mac (o sul disco) e riprova.")
-            return
-        }
-        var plan = CopyPlan(partition: record.bsdName, volumeName: record.name,
-                            entries: scan.entries, folders: scan.folders,
-                            destination: destination)
-        if !scan.existing.isEmpty {
-            let ask = NSAlert()
-            ask.messageText = "\(scan.existing.count) file esistono già su «\(record.name)»"
-            ask.informativeText = listed(scan.existing.map { plan.entries[$0].path }) + """
-
-
-            «Sostituisci»: il file sul disco viene sostituito solo dopo che il nuovo è stato scritto e verificato.
-            «Salta questi»: i file già presenti restano come sono e non vengono copiati.
-            """
-            ask.addButton(withTitle: "Sostituisci")
-            ask.addButton(withTitle: "Salta questi")
-            ask.addButton(withTitle: "Annulla")
-            switch ask.runModal() {
-            case .alertFirstButtonReturn:
-                for index in scan.existing { plan.entries[index].replace = true }
-            case .alertSecondButtonReturn:
-                let skip = Set(scan.existing)
-                plan.entries = plan.entries.enumerated().filter { !skip.contains($0.offset) }.map(\.element)
-            default:
-                return
-            }
-        }
-        guard !plan.entries.isEmpty || !plan.folders.isEmpty else {
-            message = "Niente da copiare: tutti i file sono già sul disco."
-            return
-        }
-        let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: plan.totalBytes), countStyle: .file)
-        var what = "\(plan.entries.count) file"
-        if !plan.folders.isEmpty { what += " in \(plan.folders.count) cartelle" }
-        let confirm = NSAlert()
-        confirm.messageText = "Copiare \(what) (\(size)) su «\(record.name)»?"
-        var details = "Destinazione: \(plan.destinationLabel)."
-        if plan.replacedCount > 0 {
-            details += "\n\(plan.replacedCount) file già presenti verranno sostituiti."
-        }
-        if !scan.skipped.isEmpty {
-            details += "\nNon copiati (link simbolici o file speciali): \(scan.skipped.count)."
-        }
-        confirm.informativeText = details + """
-
-
-        Ogni file viene riletto dal disco e confrontato con l'originale. Durante la copia il disco viene smontato.
-        Non scollegare il disco finché non compare «Copia completata». Se la copia si interrompe, il disco andrà controllato su Windows con «chkdsk X: /f»; i file già presenti restano intatti.
-        """
-        confirm.addButton(withTitle: "Copia")
-        confirm.addButton(withTitle: "Annulla")
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
-        run(plan, record: record)
-    }
-
-    /// Returns "" for the root, a relative path for a folder, nil if cancelled.
-    private func chooseDestination(_ record: DiskRecord) -> String? {
-        guard let mount = record.mountURL else { return "" }
-        let ask = NSAlert()
-        ask.messageText = "Dove copiare i file su «\(record.name)»?"
-        ask.addButton(withTitle: "Cartella principale")
-        ask.addButton(withTitle: "Scegli cartella…")
-        ask.addButton(withTitle: "Annulla")
-        switch ask.runModal() {
-        case .alertFirstButtonReturn: return ""
-        case .alertSecondButtonReturn: break
-        default: return nil
-        }
-        let panel = NSOpenPanel()
-        panel.title = "Cartella di destinazione su «\(record.name)»"
-        panel.prompt = "Scegli"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = false
-        panel.directoryURL = mount
-        guard panel.runModal() == .OK, let chosen = panel.url?.standardizedFileURL else { return nil }
-        let root = mount.standardizedFileURL.path
-        let path = chosen.path
-        guard path == root || path.hasPrefix(root + "/") else {
-            alert("Cartella non valida", "Scegli una cartella che si trova sul disco «\(record.name)».")
-            return nil
-        }
-        return NTFSCopyRunner.normalized(String(path.dropFirst(root.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")))
-    }
-
-    func canEdit(_ record: DiskRecord?) -> Bool {
-        guard let record else { return false }
-        return record.isNTFS && record.isExternal && record.mountURL != nil && !busy
-    }
-
-    /// Picks entries on the read-only mounted volume and returns their paths
-    /// relative to the volume root.
-    private func pickOnVolume(_ record: DiskRecord, title: String, prompt: String,
-                              files: Bool, folders: Bool, multiple: Bool,
-                              allowRoot: Bool = false) -> [String]? {
-        guard let mount = record.mountURL?.standardizedFileURL else {
-            alert("Disco non montato", "Apri prima il disco in sola lettura.")
-            return nil
-        }
-        let panel = NSOpenPanel()
-        panel.title = title
-        panel.prompt = prompt
-        panel.canChooseFiles = files
-        panel.canChooseDirectories = folders
-        panel.allowsMultipleSelection = multiple
-        panel.canCreateDirectories = false
-        panel.directoryURL = mount
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return nil }
-        let root = mount.path
-        var paths: [String] = []
-        for url in panel.urls {
-            let path = url.standardizedFileURL.path
-            if path == root {
-                if allowRoot { paths.append(""); continue }
-                alert("Scelta non valida", "Scegli file o cartelle dentro il disco, non il disco intero.")
-                return nil
-            }
-            guard path.hasPrefix(root + "/") else {
-                alert("Scelta non valida", "Scegli elementi che si trovano sul disco «\(record.name)».")
-                return nil
-            }
-            paths.append(NTFSCopyRunner.normalized(String(path.dropFirst(root.count + 1))))
-        }
-        return paths
-    }
-
-    private func askName(_ title: String, _ text: String, initial: String) -> String? {
-        let ask = NSAlert()
-        ask.messageText = title
-        ask.informativeText = text
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        field.stringValue = initial
-        ask.accessoryView = field
-        ask.addButton(withTitle: "OK")
-        ask.addButton(withTitle: "Annulla")
-        ask.window.initialFirstResponder = field
-        guard ask.runModal() == .alertFirstButtonReturn else { return nil }
-        let name = NTFSCopyRunner.normalized(field.stringValue.trimmingCharacters(in: .newlines))
-        if let problem = NTFSCopyRunner.problem(withName: name) {
-            alert("Nome non valido", "«\(name)»: \(problem).")
-            return nil
-        }
-        return name
-    }
-
-    func beginDelete() {
-        guard let record = currentSelection(), canEdit(record),
-              let paths = pickOnVolume(record, title: "Elementi da eliminare su «\(record.name)»",
-                                       prompt: "Avanti", files: true, folders: true,
-                                       multiple: true) else { return }
-        let names = paths.map { $0.split(separator: "/").last.map(String.init) ?? $0 }
-        let listed = names.prefix(8).map { "• \($0)" }.joined(separator: "\n") +
-            (names.count > 8 ? "\n… e altri \(names.count - 8)" : "")
-        let confirm = NSAlert()
-        confirm.alertStyle = .warning
-        confirm.messageText = "Eliminare definitivamente \(paths.count) elemento/i da «\(record.name)»?"
-        confirm.informativeText = """
-        \(listed)
-
-        Le cartelle vengono eliminate con tutto il contenuto. Sul disco NTFS non c'è un Cestino: l'operazione non si può annullare.
-        """
-        confirm.addButton(withTitle: "Elimina")
-        confirm.addButton(withTitle: "Annulla")
-        confirm.buttons.first?.hasDestructiveAction = true
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
-        run(EditRequest(partition: record.bsdName, volumeName: record.name,
-                        kind: .delete(paths)), record: record)
-    }
-
-    func beginRename() {
-        guard let record = currentSelection(), canEdit(record),
-              let path = pickOnVolume(record, title: "Elemento da rinominare su «\(record.name)»",
-                                      prompt: "Rinomina…", files: true, folders: true,
-                                      multiple: false)?.first else { return }
-        let old = path.split(separator: "/").last.map(String.init) ?? path
-        guard let name = askName("Rinomina «\(old)»", "Nuovo nome (resta nella stessa cartella):",
-                                 initial: old), name != old else { return }
-        run(EditRequest(partition: record.bsdName, volumeName: record.name,
-                        kind: .rename(path, to: name)), record: record)
-    }
-
-    func beginMove() {
-        guard let record = currentSelection(), canEdit(record),
-              let paths = pickOnVolume(record, title: "Elementi da spostare su «\(record.name)»",
-                                       prompt: "Avanti", files: true, folders: true,
-                                       multiple: true),
-              let destination = pickOnVolume(record, title: "Sposta in quale cartella di «\(record.name)»?",
-                                             prompt: "Sposta qui", files: false, folders: true,
-                                             multiple: false, allowRoot: true)?.first else { return }
-        run(EditRequest(partition: record.bsdName, volumeName: record.name,
-                        kind: .move(paths, to: destination)), record: record)
-    }
-
-    func beginNewFolder() {
-        guard let record = currentSelection(), canEdit(record),
-              let parent = pickOnVolume(record, title: "Dove creare la cartella su «\(record.name)»",
-                                        prompt: "Qui", files: false, folders: true,
-                                        multiple: false, allowRoot: true)?.first,
-              let name = askName("Nuova cartella",
-                                 "Nome della cartella in «\(parent.isEmpty ? record.name : parent)»:",
-                                 initial: "Nuova cartella") else { return }
-        run(EditRequest(partition: record.bsdName, volumeName: record.name,
-                        kind: .newFolder(in: parent, named: name)), record: record)
-    }
-
-    private func run(_ plan: CopyPlan, record: DiskRecord) {
-        perform(record: record, title: "Copia su «\(plan.volumeName)»", names: plan.names,
-                partition: plan.partition, editing: false) { progressFile in
-            NTFSCopyRunner.run(plan, progressFile: progressFile)
-        }
-    }
-
-    private func run(_ request: EditRequest, record: DiskRecord) {
-        perform(record: record, title: request.title, names: [],
-                partition: request.partition, editing: true) { progressFile in
-            NTFSCopyRunner.run(request, progressFile: progressFile)
-        }
-    }
-
-    /// Runs one engine operation with the shared progress bar and outcome
-    /// handling; the engine itself enforces every safety rule.
-    private func perform(record: DiskRecord, title: String, names: [String],
-                         partition: String, editing: Bool,
-                         operation: @escaping @Sendable (URL) -> CopyOutcome) {
-        let progressFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("openhdd-progress-\(UUID().uuidString)")
-        guard FileManager.default.createFile(atPath: progressFile.path, contents: nil,
-                                             attributes: [.posixPermissions: 0o600]) else {
-            message = "Impossibile preparare l'operazione."
-            return
-        }
-        busy = true
-        canCancel = !editing
-        copyProgress = 0
-        copyTitle = title
-        statusOverrides[record.bsdName] = editing ? "Modifica in corso" : "Trasferimento in corso"
-        message = NTFSCopyRunner.needsAdministrator(partition) ?
-            "macOS chiederà la password di amministratore per scrivere sul disco." :
-            "Operazione in corso…"
-        copyDetail = "Preparazione…"
-        copyRemaining = ""
-        var clock = TransferClock()
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let progress = NTFSCopyRunner.readProgress(progressFile) else { return }
-                let now = ProcessInfo.processInfo.systemUptime
-                clock.update(progress, now: now)
-                self.copyProgress = progress.fraction
-                var detail = (editing ? "Elemento" : "File") +
-                    " \(progress.fileIndex + 1) di \(progress.fileCount) · " +
-                    progress.label(names: names)
-                if (progress.phase == 1 || progress.phase == 3), !clock.speed.isEmpty {
-                    detail += " · " + clock.speed
-                }
-                if self.canCancel || editing { self.copyDetail = detail }
-                self.copyRemaining = progress.done >= progress.total ?
-                    "Quasi finito" : "Tempo rimanente: " + clock.remaining(progress, now: now).lowercasedFirst
-                self.message = "Non scollegare il disco finché l'operazione non è completata."
-            }
-        }
-        Task.detached { [store = self] in
-            let outcome = operation(progressFile)
-            try? FileManager.default.removeItem(at: progressFile)
-            await MainActor.run {
-                timer.invalidate()
-                store.finishCopy(outcome, record: record, editing: editing)
-            }
-        }
-    }
-
-    private func finishCopy(_ outcome: CopyOutcome, record: DiskRecord, editing: Bool = false) {
-        busy = false
-        canCancel = false
-        copyProgress = nil
-        copyDetail = ""
-        copyRemaining = ""
-        switch outcome {
-        case .success(let text):
-            statusOverrides.removeValue(forKey: record.bsdName)
-            message = text
-        case .cancelled:
-            statusOverrides.removeValue(forKey: record.bsdName)
-            message = "Operazione annullata: nessuna modifica al disco."
-        case .stopped(let text):
-            statusOverrides.removeValue(forKey: record.bsdName)
-            message = text
-        case .failure(let text, let needsWindowsCheck):
-            statusOverrides[record.bsdName] = needsWindowsCheck ? "Verifica necessaria" : "Non scritto"
-            message = text
-            let noun = editing ? "Modifica" : "Copia"
-            alert(needsWindowsCheck ? "\(noun) non completata: controlla il disco su Windows" :
-                    "\(noun) non eseguita", text)
-        }
-        if let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, record.bsdName) {
+    func refresh(bsdName: String) {
+        if let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, bsdName) {
             refresh(disk)
         }
     }
 
-    private func alert(_ title: String, _ text: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = text
-        alert.runModal()
+    /// Mounts an NTFS volume read-only for browsing, without opening the Finder.
+    func mountReadOnly(_ record: DiskRecord) {
+        guard record.isNTFS, record.mountURL == nil, !busy else { return }
+        selected = record.bsdName
+        openFinderAfterMount = false
+        openInFinder()
     }
 }
 #endif
 
+#if !OPENHDD_LOCAL
 private struct ContentView: View {
     @ObservedObject var store: DiskStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            #if OPENHDD_LOCAL
-            Text("OpenHDD Local").font(.largeTitle.bold())
-            #else
             Text("OpenHDD").font(.largeTitle.bold())
-            #endif
-            #if OPENHDD_LOCAL
-            Text("Lettura NTFS tramite macOS. Copia di file nuovi su NTFS con verifica.")
-                .foregroundStyle(.secondary)
-            #else
             Text("NTFS in sola lettura. Selezione e montaggio manuali.")
                 .foregroundStyle(.secondary)
-            #endif
             List(selection: $store.selected) {
                 // The status is part of the row identity: List rows on macOS
                 // are redrawn only when their data changes.
@@ -919,63 +648,15 @@ private struct ContentView: View {
                     }
                     .tag(disk.id)
                     .id("\(disk.bsdName)|\(store.state(for: disk))")
-                    #if OPENHDD_LOCAL
-                    .onDrop(of: [.fileURL], isTargeted: nil) { store.drop($0, on: disk) }
-                    #endif
                 }
             }
-            #if OPENHDD_LOCAL
-            .onDrop(of: [.fileURL], isTargeted: nil) { store.drop($0, on: nil) }
-            #endif
-            #if OPENHDD_LOCAL
-            if let preparing = store.preparing {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Text(preparing).font(.callout)
-                    Spacer()
-                    Button("Annulla") { store.cancelOperation() }
-                }
-            }
-            if let progress = store.copyProgress {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(store.copyTitle).font(.callout.bold())
-                        Spacer()
-                        Text("\(Int(progress * 100)) %").font(.callout.monospacedDigit())
-                        if store.canCancel {
-                            Button("Annulla") { store.cancelOperation() }
-                        }
-                    }
-                    ProgressView(value: progress)
-                    Text(store.copyDetail).font(.caption)
-                    Text(store.copyRemaining).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            #endif
             Text(store.message).font(.callout).foregroundStyle(.secondary)
                 .textSelection(.enabled)
             HStack {
                 Button("Apri in sola lettura") { store.requestReadOnlyMount() }
-                    #if OPENHDD_LOCAL
-                    .disabled(store.busy || store.currentSelection()?.isNTFS != true)
-                    #else
                     .disabled(store.busy || store.currentSelection()?.isNTFS != true || store.currentSelection()?.isMountedByOpenHDD == true)
-                    #endif
                 Button("Apri nel Finder") { store.openInFinder() }
                     .disabled(store.busy || !store.canOpenInFinder(store.currentSelection()))
-                #if OPENHDD_LOCAL
-                Button("Copia sul disco…") { store.beginCopy() }
-                    .disabled(!store.canCopy(store.currentSelection()))
-                Menu("Modifica") {
-                    Button("Nuova cartella…") { store.beginNewFolder() }
-                    Button("Rinomina…") { store.beginRename() }
-                    Button("Sposta…") { store.beginMove() }
-                    Divider()
-                    Button("Elimina…", role: .destructive) { store.beginDelete() }
-                }
-                .fixedSize()
-                .disabled(!store.canEdit(store.currentSelection()))
-                #endif
                 Spacer()
                 Button("Espelli") { store.eject() }
                     .disabled(store.busy || store.currentSelection() == nil)
@@ -984,3 +665,4 @@ private struct ContentView: View {
         .padding(22)
     }
 }
+#endif

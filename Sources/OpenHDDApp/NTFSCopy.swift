@@ -51,24 +51,6 @@ struct CopyPlan {
     }
 }
 
-/// URLs collected from drop callbacks, which arrive on background queues.
-final class DroppedURLs: @unchecked Sendable {
-    private let lock = NSLock()
-    private var urls: [URL] = []
-
-    func append(_ url: URL) {
-        lock.lock()
-        urls.append(url)
-        lock.unlock()
-    }
-
-    var all: [URL] {
-        lock.lock()
-        defer { lock.unlock() }
-        return urls
-    }
-}
-
 /// Lets the user stop a long walk through folders.
 final class ScanToken: @unchecked Sendable {
     private let lock = NSLock()
@@ -156,11 +138,12 @@ enum CopyScanner {
                 at: url, includingPropertiesForKeys: keys, options: [],
                 errorHandler: { failed, _ in unreadable.append(failed.lastPathComponent); return true })
             else { scan.problems.append("«\(name)»: cartella non leggibile"); continue }
-            let rootPath = url.path
             for case let fileURL as URL in walker {
                 if token?.isCancelled == true { scan.cancelled = true; return scan }
-                let relative = String(fileURL.path.dropFirst(rootPath.count))
-                    .split(separator: "/").map { NTFSCopyRunner.normalized(String($0)) }
+                // The walk's depth, not string prefixes: the enumerator may
+                // hand back resolved paths (/private/var for /var).
+                let relative = fileURL.pathComponents.suffix(walker.level)
+                    .map { NTFSCopyRunner.normalized($0) }
                 guard let leaf = relative.last else { continue }
                 let folder = join(top, relative.dropLast().joined(separator: "/"))
                 let shown = join(name, relative.joined(separator: "/"))
@@ -197,20 +180,29 @@ enum CopyScanner {
         let isDirectory: Bool
     }
 
-    /// Compares the plan with the read-only mounted volume. An existing file
-    /// with the same name can be replaced; an existing folder, or a name
-    /// that differs only in letter case, cannot.
+    /// Compares the plan with the read-only mounted volume.
     static func compare(_ scan: inout CopyScan, mount: URL) {
+        compare(&scan) { folder in
+            let url = folder.isEmpty ? mount : mount.appendingPathComponent(folder)
+            let items = (try? FileManager.default.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [])) ?? []
+            return items.map { item in
+                (NTFSCopyRunner.normalized(item.lastPathComponent),
+                 (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true)
+            }
+        }
+    }
+
+    /// Compares the plan with the volume, one listing per folder. An existing
+    /// file with the same name can be replaced; an existing folder, or a name
+    /// that differs only in letter case, cannot.
+    static func compare(_ scan: inout CopyScan,
+                        list: (String) -> [(name: String, isDirectory: Bool)]) {
         var listings: [String: [String: Existing]] = [:]
         func listing(_ folder: String) -> [String: Existing] {
             if let cached = listings[folder] { return cached }
-            let url = folder.isEmpty ? mount : mount.appendingPathComponent(folder)
             var map: [String: Existing] = [:]
-            let items = (try? FileManager.default.contentsOfDirectory(
-                at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [])) ?? []
-            for item in items {
-                let name = NTFSCopyRunner.normalized(item.lastPathComponent)
-                let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            for (name, isDirectory) in list(folder) {
                 map[fold(name)] = Existing(name: name, isDirectory: isDirectory)
             }
             listings[folder] = map
@@ -298,91 +290,9 @@ struct TransferClock {
     }
 }
 
-/// A change to entries already on the volume. Paths are relative to the
-/// volume root, "/"-separated; the tool refuses system entries itself.
-struct EditRequest {
-    enum Kind {
-        case delete([String])
-        case rename(String, to: String)
-        case newFolder(in: String, named: String)
-        case move([String], to: String)
-    }
-
-    let partition: String
-    let volumeName: String
-    let kind: Kind
-
-    var arguments: [String] {
-        switch kind {
-        case .delete(let paths): return ["--delete"] + paths
-        case .rename(let path, let name): return ["--rename", path, name]
-        case .newFolder(let parent, let name): return ["--mkdir", parent, name]
-        case .move(let paths, let destination): return ["--move", destination] + paths
-        }
-    }
-
-    var title: String {
-        switch kind {
-        case .delete: return "Eliminazione su «\(volumeName)»"
-        case .rename: return "Rinomina su «\(volumeName)»"
-        case .newFolder: return "Nuova cartella su «\(volumeName)»"
-        case .move: return "Spostamento su «\(volumeName)»"
-        }
-    }
-
-    var successMessage: String {
-        switch kind {
-        case .delete(let paths):
-            return "Eliminazione completata e verificata: \(paths.count) elemento/i. Il disco è di nuovo in sola lettura."
-        case .rename(let path, let name):
-            let old = path.split(separator: "/").last.map(String.init) ?? path
-            return "«\(old)» rinominato in «\(name)» e verificato. Il disco è di nuovo in sola lettura."
-        case .newFolder(_, let name):
-            return "Cartella «\(name)» creata e verificata. Il disco è di nuovo in sola lettura."
-        case .move(let paths, let destination):
-            let target = destination.isEmpty ? "cartella principale" : "«\(destination)»"
-            return "Spostamento completato e verificato: \(paths.count) elemento/i in \(target). Il disco è di nuovo in sola lettura."
-        }
-    }
-}
-
-enum CopyOutcome {
-    case success(String)
-    case cancelled
-    /// The user stopped a copy; the volume is clean.
-    case stopped(String)
-    case failure(String, needsWindowsCheck: Bool)
-}
-
 /// Runs the bundled OpenHDDCopy tool. The tool owns every safety rule
 /// (preflight, dirty mark, verification); the app only prepares the request.
-/// The tool currently running, so the user can ask it to stop.
-final class RunningTool: @unchecked Sendable {
-    private let lock = NSLock()
-    private var process: Process?
-    private var interruptPending = false
-
-    /// Registers the running tool; a stop asked just before it started is
-    /// delivered now.
-    func set(_ process: Process?) {
-        lock.lock()
-        self.process = process
-        if let process, interruptPending { process.interrupt() }
-        interruptPending = false
-        lock.unlock()
-    }
-
-    /// SIGINT: the tool stops at a safe point and cleans up after itself.
-    func interrupt() {
-        lock.lock()
-        if let process { process.interrupt() } else { interruptPending = true }
-        lock.unlock()
-    }
-}
-
 enum NTFSCopyRunner {
-    static let running = RunningTool()
-
     static var toolURL: URL? {
         Bundle.main.url(forResource: "OpenHDDCopy", withExtension: nil)
     }
@@ -391,7 +301,7 @@ enum NTFSCopyRunner {
     static func problem(withName name: String) -> String? {
         if name.isEmpty { return "nome vuoto" }
         if name.utf16.count > 255 { return "nome troppo lungo" }
-        if name.hasPrefix(".OpenHDD-") { return "nome riservato a OpenHDD" }
+        if name.hasPrefix(".OpenHDD-") { return "nome riservato a Custodrive" }
         if name.hasSuffix(".") || name.hasSuffix(" ") { return "termina con punto o spazio" }
         let forbidden = CharacterSet(charactersIn: "\"*/:<>?\\|").union(.controlCharacters)
         if name.unicodeScalars.contains(where: { forbidden.contains($0) }) {
@@ -418,104 +328,20 @@ enum NTFSCopyRunner {
         access("/dev/\(partition)", R_OK | W_OK) != 0
     }
 
-    static func run(_ plan: CopyPlan, progressFile: URL) -> CopyOutcome {
-        guard let manifest = plan.writeManifest() else {
-            return .failure("Impossibile preparare l'elenco dei file da copiare.", needsWindowsCheck: false)
-        }
-        defer { try? FileManager.default.removeItem(at: manifest) }
-        return execute(partition: plan.partition, arguments: ["--manifest", manifest.path],
-                       progressFile: progressFile) { summary(of: $0, plan: plan) }
-    }
-
-    static func run(_ request: EditRequest, progressFile: URL) -> CopyOutcome {
-        execute(partition: request.partition, arguments: request.arguments,
-                progressFile: progressFile) { text in
-            var message = request.successMessage
-            if text.contains("Removed ") {
-                message += " Rimossi anche i file temporanei di una copia interrotta in precedenza."
-            }
-            return message
-        }
-    }
-
-    // The tool runs as the user, so it reads the chosen files with the app's
-    // permissions; for a USB drive it asks macOS (authopen) for an
-    // administrator-authorised descriptor of that one partition only.
-    private static func execute(partition: String, arguments: [String], progressFile: URL,
-                                success: (String) -> String) -> CopyOutcome {
-        guard let tool = toolURL else {
-            return .failure("Componente di copia mancante nell'app.", needsWindowsCheck: false)
-        }
-        let process = Process()
-        process.executableURL = tool
-        process.arguments = ["--disk", partition, "--yes",
-                             "--owner-uid", String(getuid()),
-                             "--progress", progressFile.path] + arguments
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        do { try process.run() } catch {
-            return .failure("Avvio dell'operazione non riuscito: \(error.localizedDescription)",
-                            needsWindowsCheck: false)
-        }
-        running.set(process)
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        running.set(nil)
-        let text = String(decoding: data, as: UTF8.self)
-        // Stopped before it installed its handler: that is before the disk
-        // was unmounted or touched.
-        if process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGINT {
-            return .stopped("Copia annullata prima di iniziare: nessuna modifica al disco.")
-        }
-        if text.contains("Cancelled:") {
-            var message = "Copia annullata: il disco è pulito."
-            if let range = text.range(of: "Earlier batches: ") {
-                let count = text[range.upperBound...].prefix(while: \.isNumber)
-                message += " I primi \(count) file erano già stati copiati e verificati e restano sul disco; gli altri non sono stati aggiunti."
-            } else {
-                message += " Nessun file è stato aggiunto."
-            }
-            return .stopped(message)
-        }
-        if text.contains("(-128)") || text.contains("authorization for the drive was denied") {
-            return .cancelled
-        }
-        if process.terminationStatus == 0, text.contains("PASS:") {
-            return .success(success(text))
-        }
-        return .failure(explanation(of: text), needsWindowsCheck: text.contains("chkdsk"))
-    }
-
-    private static func summary(of text: String, plan: CopyPlan) -> String {
-        var what = "\(plan.entries.count) file"
-        if !plan.folders.isEmpty { what += " e \(plan.folders.count) cartelle" }
-        if plan.replacedCount > 0 { what += " (\(plan.replacedCount) sostituiti)" }
-        var message = "Copia completata e verificata: \(what) in \(plan.destinationLabel). " +
-            "Il disco è di nuovo in sola lettura."
-        if text.contains("Removed ") {
-            message += " Rimossi anche i file temporanei di una copia interrotta in precedenza."
-        }
-        if text.contains("read-only remount failed") {
-            message = "Copia completata e verificata. Espelli e ricollega il disco per vedere i file."
-        }
-        return message
-    }
-
     /// Translates the tool's diagnostics into a short Italian message.
-    private static func explanation(of text: String) -> String {
+    static func explanation(of text: String) -> String {
         let rules: [(String, String)] = [
             ("journal state suspect", "Windows non ha chiuso correttamente il disco (journal NTFS aperto): era ancora in uso quando è stato scollegato. Ricollegalo a Windows, usa «Rimozione sicura dell'hardware» ed espellilo, poi riprova."),
             ("hibernation state uncertain", "Windows è in ibernazione o con Avvio rapido attivo su questo disco. Spegni Windows completamente (non solo sospensione) e riprova."),
             ("dirty volume", "Il disco risulta da controllare (volume «dirty»). Collegalo a Windows ed esegui «chkdsk X: /f» prima di scrivere."),
             ("unfinished OpenHDD transfer", "Una copia precedente è stata interrotta. Collegalo a Windows ed esegui «chkdsk X: /f», poi riprova."),
             ("previous OpenHDD transfer unresolved", "Una copia precedente su questo Mac non si è conclusa. Controlla il disco su Windows con «chkdsk X: /f», poi riprova."),
-            ("$TXF_DATA", "Il volume contiene dati transazionali Windows che OpenHDD non modifica."),
+            ("$TXF_DATA", "Il volume contiene dati transazionali Windows che Custodrive non modifica."),
             ("already exists", "Esiste già un elemento con lo stesso nome nella stessa cartella (maiuscole e minuscole non contano per Windows). Scegli un altro nome."),
             ("not enough free space", "Spazio libero insufficiente sul disco NTFS."),
             ("not found on the volume", "L'elemento o la cartella indicati non esistono più sul disco."),
             ("protected system entry", "Non si possono modificare i file di sistema di NTFS o di Windows ($MFT, System Volume Information…)."),
-            ("junction, symbolic", "L'elemento è o contiene un collegamento (junction o link simbolico) o un file cifrato: OpenHDD non lo segue e non ha cambiato nulla."),
+            ("junction, symbolic", "L'elemento è o contiene un collegamento (junction o link simbolico) o un file cifrato: Custodrive non lo segue e non ha cambiato nulla."),
             ("normal unmount failed", "macOS non riesce a smontare il disco: chiudi i file aperti da quel disco e riprova."),
             ("not an external NTFS partition", "Il disco selezionato non è una partizione NTFS esterna."),
             ("exclusive open", "macOS non ha lasciato l'accesso esclusivo al disco: un'altra app o il sistema lo sta usando. Chiudi i file aperti dal disco e riprova."),

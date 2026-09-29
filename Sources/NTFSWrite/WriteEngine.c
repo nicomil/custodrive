@@ -82,6 +82,11 @@ int oh_cancel_requested(void)
     return cancel_flag != 0;
 }
 
+void oh_reset_cancel(void)
+{
+    cancel_flag = 0;
+}
+
 typedef struct {
     int fd;
     uint64_t size;
@@ -2669,4 +2674,197 @@ int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
     return oh_copy_new_files(target_fd, target_size, is_device, NULL, &item, 1,
                              NULL, NULL, &failed, failure_stage,
                              safety_warnings, NULL);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Read-only view for browsing during an edit session                       */
+/* ------------------------------------------------------------------------ */
+
+/* Browsing reads many small metadata records (one MFT record per listed
+   entry); on USB each is a round trip. The view reads 256 KiB blocks and
+   serves small reads from the last one. It never sees a write: the session
+   closes the view before writing and opens a fresh one afterwards. */
+enum { VIEW_BLOCK = 256 * 1024 };
+
+struct OHView {
+    Target target;
+    OHNTFSVolume *volume;
+    unsigned char *block;
+    uint64_t block_offset;
+    uint64_t block_length;
+};
+
+static int64_t view_read(void *opaque, uint64_t offset, void *buffer, uint64_t length)
+{
+    OHView *view = opaque;
+    if (length > INT64_MAX || offset > INT64_MAX || offset > view->target.size) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    int direct = length >= VIEW_BLOCK / 2;
+    #ifdef OPENHDD_TESTING
+    if (getenv("OPENHDD_TEST_NO_VIEW_CACHE")) direct = 1;
+    #endif
+    if (direct)
+        return bounded_io(&view->target, buffer, (s64)length, (s64)offset, 0);
+    uint64_t done = 0;
+    while (done < length) {
+        uint64_t at = offset + done;
+        if (!(view->block_length && at >= view->block_offset &&
+              at < view->block_offset + view->block_length)) {
+            uint64_t start = at - at % VIEW_BLOCK;
+            uint64_t amount = view->target.size - start;
+            if (amount > VIEW_BLOCK) amount = VIEW_BLOCK;
+            view->block_length = 0;
+            if (bounded_io(&view->target, view->block, (s64)amount, (s64)start, 0) != (s64)amount)
+                return done ? (int64_t)done : -1;
+            view->block_offset = start;
+            view->block_length = amount;
+        }
+        uint64_t inside = at - view->block_offset;
+        uint64_t amount = view->block_length - inside;
+        if (amount > length - done) amount = length - done;
+        memcpy((unsigned char *)buffer + done, view->block + inside, amount);
+        done += amount;
+        if (view->block_length < VIEW_BLOCK && at + amount >= view->block_offset + view->block_length)
+            break; /* end of the device */
+    }
+    return (int64_t)done;
+}
+
+int oh_view_open(int target_fd, uint64_t target_size, int is_device,
+                 OHView **view, uint32_t *safety_warnings)
+{
+    if (!view || !safety_warnings || target_size < 4096 || target_size > INT64_MAX)
+        return EINVAL;
+    *view = NULL;
+    *safety_warnings = 0;
+    quiet_ntfs_log();
+    OHView *opened = calloc(1, sizeof(*opened));
+    if (!opened) return ENOMEM;
+    opened->target = (Target){ .fd = target_fd, .size = target_size,
+                               .is_device = is_device,
+                               .align = device_alignment(target_fd) };
+    int setup = !opened->target.align ? EIO :
+        posix_memalign((void **)&opened->block, 4096, VIEW_BLOCK) ? ENOMEM : 0;
+    if (setup) {
+        free(opened);
+        return setup;
+    }
+    /* Browsing is allowed on a volume that needs checking: it only reads. */
+    int status = oh_ntfs_open(view_read, opened, target_size, &opened->volume,
+                              safety_warnings);
+    if (status) {
+        if (opened->target.io_failed) status = EIO;
+        free(opened->block);
+        free(opened);
+        return status;
+    }
+    *view = opened;
+    return 0;
+}
+
+void oh_view_close(OHView *view)
+{
+    if (!view) return;
+    oh_ntfs_close(view->volume);
+    #ifdef OPENHDD_TESTING
+    if (getenv("OPENHDD_TEST_REPORT_READS"))
+        fprintf(stderr, "view reads=%llu\n", (unsigned long long)view->target.read_calls);
+    #endif
+    free(view->block);
+    free(view);
+}
+
+typedef struct {
+    OHViewEntry callback;
+    void *context;
+    int root;
+} ViewListing;
+
+static char *nfc_copy(const char *value)
+{
+    CFStringRef string = CFStringCreateWithCString(kCFAllocatorDefault, value,
+                                                   kCFStringEncodingUTF8);
+    if (!string) return NULL;
+    CFMutableStringRef normal = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, string);
+    CFRelease(string);
+    if (!normal) return NULL;
+    CFStringNormalize(normal, kCFStringNormalizationFormC);
+    CFIndex capacity = CFStringGetMaximumSizeForEncoding(
+        CFStringGetLength(normal), kCFStringEncodingUTF8) + 1;
+    char *out = malloc((size_t)capacity);
+    if (out && !CFStringGetCString(normal, out, capacity, kCFStringEncodingUTF8)) {
+        free(out);
+        out = NULL;
+    }
+    CFRelease(normal);
+    return out;
+}
+
+static int view_entry(void *opaque, const char *name, const OHNTFSItem *item)
+{
+    ViewListing *listing = opaque;
+    if (!strncmp(name, ".OpenHDD-", 9)) return 0;
+    if (listing->root && (name[0] == '$' || !strcmp(name, "System Volume Information")))
+        return 0;
+    char *normal = nfc_copy(name);
+    if (!normal) return ENOMEM;
+    OHEntryInfo info = { .kind = (int)item->kind, .special = item->special != 0,
+                         .size = item->kind == 1 ? item->size : 0,
+                         .modified_ns = item->modified_ns };
+    int status = listing->callback(listing->context, normal, &info);
+    free(normal);
+    return status;
+}
+
+int oh_view_list(OHView *view, const char *path, OHViewEntry callback, void *context)
+{
+    if (!view || !callback) return EINVAL;
+    if (path && *path && !oh_ntfs_valid_directory_path(path)) return EINVAL;
+    uint64_t inode = 0;
+    int status = resolve_plain_directory(view->volume, path ? path : "", &inode);
+    if (status) return status;
+    ViewListing listing = { .callback = callback, .context = context,
+                            .root = inode == FILE_root };
+    status = oh_ntfs_list(view->volume, inode, view_entry, &listing);
+    return view->target.io_failed ? EIO : status;
+}
+
+int oh_view_export(OHView *view, const char *path, int out_fd, uint64_t *copied)
+{
+    if (!view || !path || !*path || !copied || out_fd < 0) return EINVAL;
+    *copied = 0;
+    char parent[4097];
+    const char *leaf = NULL;
+    if (!oh_ntfs_valid_directory_path(path) || split_path(path, parent, sizeof(parent), &leaf))
+        return EINVAL;
+    uint64_t folder = 0;
+    OHNTFSItem item;
+    int status = resolve_plain_directory(view->volume, parent, &folder);
+    if (!status) status = oh_ntfs_lookup(view->volume, folder, leaf, &item);
+    if (status) return status;
+    if (item.special) return ENOTSUP;
+    if (item.kind != 1) return EISDIR;
+    unsigned char *buffer = NULL;
+    if (posix_memalign((void **)&buffer, 4096, IO_CHUNK)) return ENOMEM;
+    for (uint64_t offset = 0; offset < item.size && !status; ) {
+        if (cancel_flag) { status = ECANCELED; break; }
+        uint64_t amount = item.size - offset;
+        if (amount > IO_CHUNK) amount = IO_CHUNK;
+        if (oh_ntfs_read(view->volume, item.inode, offset, buffer, amount) != (int64_t)amount) {
+            status = EIO;
+            break;
+        }
+        for (uint64_t done = 0; done < amount; ) {
+            ssize_t n = write(out_fd, buffer + done, (size_t)(amount - done));
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { status = errno ? errno : EIO; break; }
+            done += (uint64_t)n;
+        }
+        offset += amount;
+        *copied = offset;
+    }
+    free(buffer);
+    return view->target.io_failed ? EIO : status;
 }
