@@ -5,7 +5,7 @@
 <h1 align="center">Custodrive</h1>
 
 <p align="center">
-  <b>I tuoi dischi esterni, al sicuro.</b><br>
+  <b>Copie verificate sui tuoi dischi esterni.</b><br>
   Leggi e scrivi su dischi e chiavette Windows (NTFS) dal Mac, con ogni
   operazione verificata.
 </p>
@@ -18,10 +18,10 @@
 
 macOS legge i dischi NTFS ma non ci scrive. Custodrive ti permette di
 copiare foto e video, creare cartelle, rinominare, spostare ed eliminare su
-dischi formattati da Windows, con un'interfaccia simile al Finder. A ogni
-passo il disco resta coerente: se qualcosa va storto (un cavo staccato, il
-Mac che si spegne), niente di quello che c'era prima va perso e Windows sa
-riportare il disco a posto.
+dischi formattati da Windows, con un'interfaccia simile al Finder. Le copie
+vengono rilette e verificate. Un'interruzione può comunque danneggiare il
+filesystem: il segnale «da controllare» e il diario aiutano il recupero,
+ma non garantiscono l'assenza di perdite. Conserva una copia dei dati importanti.
 
 <p align="center">
   <img src="docs/images/01-browser.png" width="780" alt="Custodrive: dischi a sinistra, contenuto del disco a destra">
@@ -96,6 +96,10 @@ Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
 - **Percorso cliccabile**, pulsanti Indietro, Avanti e Cartella superiore.
 - **Doppio clic** per aprire una cartella o un file.
 - **Quick Look** con la barra spaziatrice, come nel Finder.
+- Durante **modifica attiva**, aprire un file chiede dove salvare una copia
+  sul Mac. Le modifiche nell'editor restano lì: per riportarle sul disco NTFS
+  occorre copiarle con Custodrive. Le anteprime Quick Look sono temporanee
+  e in sola lettura.
 
 ### Copiare dal Mac
 - Trascina file e **cartelle intere** dal Finder: tutte le sottocartelle
@@ -134,27 +138,26 @@ Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
 ### Coda e annullamento
 - Quello che trascini mentre una copia è in corso si mette **in coda**
   sotto la stessa barra.
-- **Annulla** ferma la copia in modo sicuro:
-  - il lotto in corso viene tolto e il disco resta pulito;
+- **Annulla** richiede l'arresto della copia:
+  - se il ripristino riesce, il lotto in corso viene tolto e il disco resta pulito;
   - i lotti già completati restano sul disco, verificati;
   - la coda viene svuotata.
 
 ## Come ti protegge
 
-Custodrive non «spera» che vada tutto bene: ogni operazione è costruita
-perché un'interruzione non faccia danni.
+Custodrive applica queste misure per rilevare errori e limitare i danni:
 
 1. **Il disco viene segnato «da controllare»** (dirty bit di NTFS) prima di
    ogni modifica. Il segno viene tolto solo quando l'operazione è finita e
-   verificata. Se il cavo si stacca a metà, Windows vede il segno e ripara il
-   disco con `chkdsk`.
+   verificata. Dopo un'interruzione, il segno richiede un controllo su
+   Windows; l'esito di `chkdsk` dipende dai danni presenti.
 2. **Niente viene sovrascritto sul posto.** I file nuovi vengono scritti a
    parte e riletti; solo dopo prendono il loro nome. Una sostituzione tiene
    da parte il vecchio file finché il nuovo non è al suo posto.
 3. **Un diario di recupero** registra sostituzioni, spostamenti e rinomine.
-   Se vengono interrotti, dopo `chkdsk` Custodrive li completa, o li annulla,
-   da solo: sotto quel nome trovi sempre il file vecchio o il nuovo, mai
-   nessuno dei due.
+   Dopo il controllo del filesystem, Custodrive verifica il diario prima
+   di completare o annullare l'operazione. Se nomi, identità o contenuti
+   risultano ambigui, rifiuta il recupero conservando quanto trova.
 4. **Dischi a rischio rifiutati.** Custodrive non scrive su dischi con
    Windows in ibernazione o Avvio rapido, con il journal non chiuso o già da
    controllare, e spiega il motivo.
@@ -162,11 +165,11 @@ perché un'interruzione non faccia danni.
    junction, link simbolici e file cifrati non vengono mai toccati né
    seguiti.
 
-Questo comportamento è collaudato con migliaia di interruzioni simulate
-(tagli di corrente a ogni singola scrittura), con decine di dischi
-verificati da `chkdsk` su Windows 11, e su chiavette USB reali, anche
-staccate a metà copia. Il dettaglio è in
-[docs/piano-scrittura-v1.md](docs/piano-scrittura-v1.md).
+I test automatici includono errori I/O e interruzioni simulate. I casi
+illeggibili o da riparare restano **inconclusivi** finché non verificati su
+Windows. Le prove storiche su Windows e USB riguardano versioni precedenti:
+non certificano automaticamente il motore attuale. Stato e limiti in
+[docs/sviluppo.md](docs/sviluppo.md).
 
 ## Scorciatoie
 
@@ -192,11 +195,13 @@ Windows, usa **Rimozione sicura dell'hardware**, poi riprova sul Mac.
 completamente (non solo sospensione), oppure disattiva l'Avvio rapido.
 
 **«Il disco va controllato su Windows».** Un'operazione è stata
-interrotta. Collega il disco a un PC Windows, apri il Prompt dei comandi
-come amministratore ed esegui `chkdsk X: /f`, dove X è la lettera del disco.
-Poi torna su Custodrive, che completa da solo quello che era rimasto a
-metà. **Se Windows propone di formattare il disco, rifiuta**: basta
-`chkdsk`.
+interrotta. Prima conserva una copia dei dati ancora accessibili. Su una
+copia sacrificabile, o dopo aver salvato i dati, apri il Prompt dei comandi
+Windows come amministratore ed esegui `chkdsk X: /f`, dove X è la lettera
+del disco. `chkdsk` modifica il filesystem e non garantisce il recupero.
+**Se Windows propone di formattare il disco, rifiuta.** Custodrive può
+riprendere solo quando il volume supera i controlli; un diario ambiguo
+richiede verifica manuale. Non cancellare i file `.OpenHDD-*` per forzarla.
 
 **Non vedo il disco nel Finder.** Durante la modifica attiva il disco è
 riservato a Custodrive: premi **Termina modifiche**.

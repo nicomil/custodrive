@@ -565,7 +565,7 @@ static void explain_failure(int code, int stage, size_t index, size_t count,
             fputs("Preflight refused: volume busy or safety state uncertain; "
                   "no writes started.\n", stderr);
     }
-    if (code == ESTALE)
+    if (code == ESTALE && !strstr(oh_last_error(), "recovery journal"))
         fprintf(stderr, "Refused: source %zu changed while it was being copied; "
                         "nothing was published.\n", index + 1);
     if (*oh_last_error())
@@ -574,8 +574,8 @@ static void explain_failure(int code, int stage, size_t index, size_t count,
             stage, code, index + 1, count);
     if (stage >= 2)
         fputs("The volume is marked for checking. Connect it to Windows and "
-              "run chkdsk X: /f before writing again. Files that existed before "
-              "this copy were not modified.\n", stderr);
+              "run chkdsk X: /f before writing again. Preserve accessible data "
+              "first; complete recovery is not guaranteed.\n", stderr);
 }
 
 static int run_check_image(const char *path)

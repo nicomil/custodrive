@@ -1,5 +1,6 @@
 #if OPENHDD_LOCAL && OPENHDD_UI_SELFTEST
 import AppKit
+import Darwin
 import Quartz
 
 /// Test build only: drives the real table data source (drag validation and
@@ -118,10 +119,30 @@ enum UISelfTest {
               model.quickLookItems.first?.path ?? "none")
         if shown { QLPreviewPanel.shared().orderOut(nil) }
 
+        let preview = model.quickLookItems.first
+        if let preview {
+            check("preview is read-only", access(preview.path, W_OK) != 0)
+            do {
+                try Data("must not replace preview".utf8).write(to: preview, options: .atomic)
+                check("preview denies atomic replacement", false)
+            } catch {
+                check("preview denies atomic replacement", true)
+            }
+        }
+        let saved = source.deletingLastPathComponent().appendingPathComponent("exported-copy.txt")
+        if let session = model.session {
+            let exported = await Task.detached { session.export("Documenti/old.bin", to: saved) }.value
+            check("editable copy exported outside preview cache", exported)
+            if exported { try? Data("local edits survive".utf8).write(to: saved) }
+        }
+
         model.endEditing()
         let ended = await wait { model.session == nil && !model.sessionChanging }
         let remounted = await wait { model.record?.mountURL != nil }
         check("session ends and remounts", ended && remounted)
+        check("editable copy survives session cleanup",
+              (try? Data(contentsOf: saved)) == Data("local edits survive".utf8))
+        check("preview cache removed", preview.map { !FileManager.default.fileExists(atPath: $0.path) } ?? false)
     }
 }
 

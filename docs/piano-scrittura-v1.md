@@ -5,6 +5,33 @@ percorso G1–G5 della [specifica transazionale](specifica-recupero-transazional
 Quella specifica resta valida come **fase 2** (journal `$LogFile` nativo), ma non
 blocca più la v1.
 
+## Perimetro attuale — 29 settembre 2026
+
+Il piano v1 e gli esiti del 28 settembre sotto sono **storici**. Le versioni
+successive aggiungono sostituzione, spostamento ed eliminazione: S1 non si
+applica a queste operazioni. Dirty bit e sincronizzazione non garantiscono
+che ogni interruzione sia riparabile: metadati spezzati e controller che non
+rispettano il flush possono causare perdite. I risultati su Windows/USB di
+una versione precedente non certificano automaticamente quella attuale.
+
+Il diario applicativo v2 contiene un checksum SHA-256 del corpo, riferimenti
+MFT con numero di sequenza e, per le sostituzioni, hash del nuovo contenuto.
+Il checksum rileva alterazioni, **non autentica** il diario. Il recupero
+valida tutti i record e le identità prima di modificare il volume; alias,
+record duplicati, riferimenti obsoleti e contenuti incoerenti bloccano il
+recupero senza scritture. Il vecchio formato resta leggibile per stati
+non ambigui; una sostituzione legacy con due file diversi viene conservata
+e rifiutata. Serve verifica manuale, non cancellazione forzata del diario.
+
+`Tests/run-recovery-probe.sh` verifica questi casi su immagini sacrificabili,
+incluse rinomine di cartelle in radice e ulteriori interruzioni del recupero.
+`ntfsfix` compare solo come preparazione dei test, non come prova di `chkdsk`.
+Le campagne powercut distinguono invarianti locali da recuperabilità:
+uscita **77 / INCONCLUSIVE** se restano casi da verificare su Windows.
+Commit, differenze locali, hash e classificazioni sono conservati in
+`Build/evidence/powercut/`. La validazione Windows e USB del nuovo formato
+resta da eseguire; vedere [sviluppo.md](sviluppo.md).
+
 ## Perché cambiare piano
 
 La specifica transazionale chiede che OpenHDD scriva transazioni `$LogFile` che
@@ -19,15 +46,15 @@ I cinque file preesistenti erano intatti. È il tipo di incoerenza che
 Il problema vero non era la perdita di dati: era che **niente segnalava a Windows
 che il volume andava controllato**, perché NTFS-3G non imposta mai il dirty bit.
 
-## Definizione di sicurezza v1
+## Definizione iniziale di sicurezza v1 (storica)
 
-La v1 promette queste proprietà, e solo queste:
+Obiettivi iniziali del piano; S3 viene limitato dal perimetro attuale sopra:
 
 | ID | Proprietà | Come si ottiene |
 |---|---|---|
 | S1 | I file già presenti non vengono mai modificati | Solo creazione di file nuovi. Niente sovrascrittura, cancellazione o rinomina di file esistenti. Nome già presente → rifiuto prima di scrivere |
 | S2 | Nessun falso successo | Successo solo dopo sync del dispositivo, rilettura indipendente con SHA-256, rimozione del temporaneo, azzeramento del dirty bit e nuovo sync |
-| S3 | Un'interruzione è sempre rilevabile e riparabile da Windows | Il dirty bit di `$Volume` viene scritto e sincronizzato **prima** di qualunque altra modifica e azzerato solo alla fine. Dopo un'interruzione Windows vede un volume da controllare; `chkdsk /f` lo riporta coerente. Nel caso peggiore si perde solo il file in copia |
+| S3 | Segnalare un'interruzione a Windows | Il dirty bit di `$Volume` viene scritto e sincronizzato **prima** delle modifiche e azzerato alla fine. Presuppone un dispositivo che rispetta il flush; `chkdsk /f` tenta la riparazione, senza garanzia sui dati recuperati |
 | S4 | Nessuna scrittura su volumi a rischio | Rifiuto di volumi dirty, ibernati/Fast Startup, journal non pulito, `$TXF_DATA` non residente, temporanei OpenHDD residui, marcatore locale di trasferimento non concluso, spazio insufficiente |
 | S5 | Nessuna riparazione automatica da Mac | Mai `ntfsfix`, reset del journal o rimozione di hiberfil. Un volume sospetto va su Windows |
 

@@ -301,7 +301,7 @@ enum NTFSCopyRunner {
     static func problem(withName name: String) -> String? {
         if name.isEmpty { return "nome vuoto" }
         if name.utf16.count > 255 { return "nome troppo lungo" }
-        if name.hasPrefix(".OpenHDD-") { return "nome riservato a Custodrive" }
+        if name.lowercased().hasPrefix(".openhdd-") { return "nome riservato a Custodrive" }
         if name.hasSuffix(".") || name.hasSuffix(" ") { return "termina con punto o spazio" }
         let forbidden = CharacterSet(charactersIn: "\"*/:<>?\\|").union(.controlCharacters)
         if name.unicodeScalars.contains(where: { forbidden.contains($0) }) {
@@ -358,13 +358,16 @@ enum NTFSCopyRunner {
             ("overlap", "Tra gli elementi da spostare ce n'è uno contenuto in un altro: spostali separatamente."),
             ("malformed manifest", "Elenco dei file da copiare non valido."),
         ]
+        if text.contains("recovery journal or temporary entries are invalid or ambiguous") {
+            return "Recupero automatico sospeso: diario o file temporanei non verificabili. Custodrive li ha conservati senza modificarli. Conserva una copia del disco e dei file prima di una verifica manuale; non eliminare i file .OpenHDD per forzare la scrittura."
+        }
         var message = rules.first(where: { text.contains($0.0) })?.1 ?? "Operazione non riuscita."
         if let range = text.range(of: "Earlier batches: ") {
             let count = text[range.upperBound...].prefix(while: \.isNumber)
             message += " I primi \(count) file erano già stati copiati e verificati: restano sul disco."
         }
         if text.contains("marked for checking") {
-            message += " L'operazione si è interrotta dopo l'inizio della scrittura: i file non coinvolti non sono stati toccati, ma il disco va controllato su Windows con «chkdsk X: /f» prima di scriverci di nuovo."
+            message += " L'operazione si è interrotta dopo l'inizio della scrittura. Prima di scrivere ancora, conserva una copia dei dati accessibili e controlla il disco su Windows con «chkdsk X: /f». Il recupero completo non è garantito."
         }
         let lines = text.split(separator: "\n").map(String.init)
         let detail = lines.first(where: { $0.hasPrefix("Detail:") }) ??

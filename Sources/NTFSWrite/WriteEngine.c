@@ -566,8 +566,8 @@ static int check_pending_entry(void *opaque, const char *name,
                                const OHNTFSItem *item)
 {
     (void)opaque; (void)item;
-    if (!strncmp(name, pending_prefix, sizeof(pending_prefix) - 1) ||
-        !strcmp(name, journal_name))
+    if (!strncasecmp(name, pending_prefix, sizeof(pending_prefix) - 1) ||
+        !strcasecmp(name, journal_name))
         return EINPROGRESS;
     return 0;
 }
@@ -676,7 +676,7 @@ int oh_ntfs_valid_new_name(const char *name)
     if (!name) return 0;
     size_t length = strlen(name);
     if (!length || length > 1020) return 0;
-    if (!strncmp(name, ".OpenHDD-", 9)) return 0;
+    if (!strncasecmp(name, ".OpenHDD-", 9)) return 0;
     if (!strcmp(name, ".") || !strcmp(name, "..")) return 0;
     if (name[length - 1] == '.' || name[length - 1] == ' ') return 0;
     size_t units = 0;
@@ -699,7 +699,8 @@ int oh_ntfs_valid_directory_path(const char *path)
 {
     if (!path) return 1;
     size_t length = strlen(path);
-    if (length > 1024) return 0;
+    if (length > 1024 || (length && (path[0] == '/' || path[length - 1] == '/')) ||
+        strstr(path, "//")) return 0;
     const unsigned char *s = (const unsigned char *)path;
     size_t component = 0;
     for (size_t i = 0; i <= length; ) {
@@ -833,6 +834,7 @@ typedef struct {
     uint64_t inode;
     uint64_t directory_inode;         /* 0 until a new folder exists */
     uint64_t old_inode;
+    uint64_t reference, old_reference;
     int replacing;                    /* an existing file is swapped out */
 } Staged;
 
@@ -1233,6 +1235,7 @@ static int verify_all(Target *target, const OHCopyItem *items, Staged *staged,
         if (!CC_SHA256_Final(actual, &sha) ||
             memcmp(actual, staged[i].digest, sizeof(actual))) { status = EIO; break; }
         staged[i].inode = item.inode;
+        staged[i].reference = item.reference;
     }
     index_free(&index);
     oh_ntfs_close(volume);
@@ -1278,16 +1281,22 @@ static int write_journal(Target *target, const OHCopyItem *items,
             length += strlen(item_directory(&items[i])) + strlen(staged[i].old) +
                 strlen(items[i].destination_name) + 3;
     if (!length) return 0;
-    length += 2 * count; /* "R\t" */
+    length += 101 * count; /* type, two MFT references and SHA-256 */
     if (length > MAX_JOURNAL) { errno = EFBIG; return -1; }
     char *text = malloc(length + 1);
     if (!text) return -1;
     size_t used = 0;
     for (size_t i = 0; i < count; ++i)
-        if (staged[i].replacing)
-            used += (size_t)snprintf(text + used, length + 1 - used, "R\t%s\t%s\t%s\n",
+        if (staged[i].replacing) {
+            char digest[65];
+            for (size_t j = 0; j < sizeof(staged[i].digest); ++j)
+                snprintf(digest + 2 * j, 3, "%02x", staged[i].digest[j]);
+            used += (size_t)snprintf(text + used, length + 1 - used, "R\t%s\t%s\t%s\t%016llx\t%016llx\t%s\n",
                                      item_directory(&items[i]), staged[i].old,
-                                     items[i].destination_name);
+                                     items[i].destination_name,
+                                     (unsigned long long)staged[i].old_reference,
+                                     (unsigned long long)staged[i].reference, digest);
+        }
     int result = write_journal_text(target, text, used);
     free(text);
     return result;
@@ -1297,6 +1306,15 @@ static int write_journal(Target *target, const OHCopyItem *items,
    describes, in its own mount. */
 static int write_journal_text(Target *target, const char *text, size_t length)
 {
+    /* Integrity check, not authentication: the whole on-disk file remains
+       untrusted and recovery validates every record and its target. */
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    char header[96], hex[65];
+    if (!CC_SHA256(text, (CC_LONG)length, digest)) return -1;
+    for (size_t i = 0; i < sizeof(digest); ++i)
+        snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+    int header_length = snprintf(header, sizeof(header), "OpenHDD-Journal\t2\t%s\n", hex);
+    if (length > MAX_JOURNAL - (size_t)header_length) { errno = EFBIG; return -1; }
     int result = -1;
     ntfs_volume *volume = mount_rw(target);
     if (!volume) return -1;
@@ -1312,7 +1330,8 @@ static int write_journal_text(Target *target, const char *text, size_t length)
             !ntfs_attr_add(created, AT_DATA, AT_UNNAMED, 0, NULL, 0))
             data = ntfs_attr_open(created, AT_DATA, AT_UNNAMED, 0);
     }
-    if (data && ntfs_attr_pwrite(data, 0, (s64)length, text) == (s64)length)
+    if (data && ntfs_attr_pwrite(data, 0, header_length, header) == header_length &&
+        ntfs_attr_pwrite(data, header_length, (s64)length, text) == (s64)length)
         result = 0;
     int failure = result ? errno : 0;
     if (data) ntfs_attr_close(data);
@@ -1326,12 +1345,14 @@ static int write_journal_text(Target *target, const char *text, size_t length)
     OHNTFSVolume *view = NULL;
     uint32_t warnings = 0;
     OHNTFSItem item;
-    char *check = malloc(length);
+    size_t total = length + (size_t)header_length;
+    char *check = malloc(total);
     int status = check ? readonly_open(target, &view, &warnings) : ENOMEM;
     if (!status && (oh_ntfs_lookup(view, FILE_root, journal_name, &item) ||
-                    item.size != length ||
-                    oh_ntfs_read(view, item.inode, 0, check, length) != (int64_t)length ||
-                    memcmp(check, text, length)))
+                    item.size != total ||
+                    oh_ntfs_read(view, item.inode, 0, check, total) != (int64_t)total ||
+                    memcmp(check, header, (size_t)header_length) ||
+                    memcmp(check + header_length, text, length)))
         status = EIO;
     if (view) oh_ntfs_close(view);
     free(check);
@@ -1483,32 +1504,48 @@ static int complete_all(Target *target, const OHCopyItem *items,
 }
 
 typedef struct {
-    char (*names)[PENDING_LENGTH + 1];
+    char name[PENDING_LENGTH + 1];
+    int directory, journaled;
+} PendingEntry;
+
+typedef struct {
+    PendingEntry *entries;
     size_t count, capacity;
     int journal;
 } PendingList;
+
+static int temporary_name(const char *name, const char *prefix)
+{
+    size_t length = strlen(prefix);
+    if (strlen(name) != length + 32 || strncmp(name, prefix, length)) return 0;
+    return strspn(name + length, "0123456789abcdef") == 32;
+}
 
 static int collect_pending(void *opaque, const char *name,
                            const OHNTFSItem *item)
 {
     PendingList *list = opaque;
-    if (!strcmp(name, journal_name)) {
-        if (item->kind != 1 || item->special) return EPERM;
+    if (!strcasecmp(name, journal_name)) {
+        if (strcmp(name, journal_name) || item->kind != 1 || item->special ||
+            item->hard_link_count != 1) return EPERM;
         list->journal = 1;
         return 0;
     }
-    if (strncmp(name, pending_prefix, sizeof(pending_prefix) - 1)) return 0;
-    if (item->kind != 1 || strlen(name) != PENDING_LENGTH ||
-        list->count == MAX_PENDING)
+    if (strncasecmp(name, pending_prefix, sizeof(pending_prefix) - 1)) return 0;
+    if (!temporary_name(name, pending_prefix) || item->special ||
+        (item->kind != 1 && item->kind != 2) || list->count == MAX_PENDING)
         return EPERM;
     if (list->count == list->capacity) {
         size_t capacity = list->capacity ? list->capacity * 2 : 64;
-        void *grown = realloc(list->names, capacity * sizeof(*list->names));
+        void *grown = realloc(list->entries, capacity * sizeof(*list->entries));
         if (!grown) return ENOMEM;
-        list->names = grown;
+        list->entries = grown;
         list->capacity = capacity;
     }
-    memcpy(list->names[list->count++], name, PENDING_LENGTH + 1);
+    PendingEntry *entry = &list->entries[list->count++];
+    memcpy(entry->name, name, PENDING_LENGTH + 1);
+    entry->directory = item->kind == 2;
+    entry->journaled = 0;
     return 0;
 }
 
@@ -1520,140 +1557,277 @@ static int read_journal(Target *target, char **text)
     int status = readonly_open(target, &view, &warnings);
     if (status) return status;
     status = warnings ? EBUSY : oh_ntfs_lookup(view, FILE_root, journal_name, &item);
-    if (!status && (item.kind != 1 || item.size > MAX_JOURNAL)) status = EPERM;
+    if (!status && (item.kind != 1 || item.special || item.hard_link_count != 1 ||
+                   !item.size || item.size > MAX_JOURNAL)) status = EPERM;
     char *buffer = status ? NULL : malloc(item.size + 1);
     if (!status && !buffer) status = ENOMEM;
     if (!status && oh_ntfs_read(view, item.inode, 0, buffer, item.size) !=
         (int64_t)item.size) status = EIO;
     oh_ntfs_close(view);
+    if (!status && (memchr(buffer, 0, item.size) || buffer[item.size - 1] != '\n'))
+        status = EINVAL;
     if (status || target->io_failed) { free(buffer); return target->io_failed ? EIO : status; }
     buffer[item.size] = 0;
     *text = buffer;
     return 0;
 }
 
-static int same_entry(ntfs_volume *volume, const char *folder_a, const char *name_a,
-                      const char *folder_b, const char *name_b, int *first, int *second)
+typedef struct {
+    char type;
+    const char *folder[2], *name[2];
+    uint64_t reference[2]; /* zero only for legacy journals */
+    const char *digest; /* expected new-file SHA-256 for a replacement */
+    int action; /* 0: already settled/undone, 1: drop first name, 2: restore it */
+} RecoveryEntry;
+
+static int recovery_directory(const char *path)
 {
-    ntfs_inode *a_dir = open_directory(volume, folder_a);
-    ntfs_inode *b_dir = open_directory(volume, folder_b);
-    ntfs_inode *a = a_dir ? ntfs_pathname_to_inode(volume, a_dir, name_a) : NULL;
-    ntfs_inode *b = b_dir ? ntfs_pathname_to_inode(volume, b_dir, name_b) : NULL;
-    *first = a != NULL;
-    *second = b != NULL;
-    int same = a && b && a->mft_no == b->mft_no;
-    if (a) ntfs_inode_close(a);
-    if (b) ntfs_inode_close(b);
-    if (a_dir) ntfs_inode_close(a_dir);
-    if (b_dir) ntfs_inode_close(b_dir);
-    return same;
+    return oh_ntfs_valid_directory_path(path) && !protected_path(path);
 }
 
-/* Replays the journal after Windows has checked the volume. Entries that
-   are gone (for example moved by chkdsk) are left alone.
-     R folder old final        a replacement: when the final name exists
-                               the new file was published and the old one
-                               is removed; otherwise the old file gets its
-                               name back
-     L from name to name       a move or rename: when both names lead to
-                               the same entry, the old name is removed
-     C folder temporary final  a change of letter case: the temporary name
-                               is dropped, or becomes the final name when
-                               no other name is left */
-static int apply_journal(ntfs_volume *volume, char *text)
+static int recovery_reference(const char *value, uint64_t *reference)
 {
-    char *line, *cursor = text;
-    while ((line = strsep(&cursor, "\n"))) {
-        if (!*line) continue;
-        char *fields[5] = { 0 };
-        size_t count = 0;
-        char *field;
-        while (count < 5 && (field = strsep(&line, "\t"))) fields[count++] = field;
-        if (line) { errno = EPERM; return -1; }
-        const char *type = fields[0];
-        if (!strcmp(type, "R") && count == 4) {
-            const char *folder = fields[1], *old = fields[2], *final = fields[3];
-            if (strncmp(old, old_prefix, sizeof(old_prefix) - 1) ||
-                !oh_ntfs_valid_new_name(final)) { errno = EPERM; return -1; }
-            int has_old = 0, has_final = 0;
-            (void)same_entry(volume, folder, old, folder, final, &has_old, &has_final);
-            if (!has_old) continue;
-            if (has_final ? unlink_name(volume, folder, old) :
-                            rename_entry(volume, folder, old, final, NULL)) return -1;
-        } else if (!strcmp(type, "L") && count == 5) {
-            int has_from = 0, has_to = 0;
-            if (same_entry(volume, fields[1], fields[2], fields[3], fields[4],
-                           &has_from, &has_to) &&
-                unlink_name(volume, fields[1], fields[2])) return -1;
-        } else if (!strcmp(type, "C") && count == 4) {
-            const char *folder = fields[1], *temporary = fields[2], *final = fields[3];
-            if (strncmp(temporary, pending_prefix, sizeof(pending_prefix) - 1) ||
-                !oh_ntfs_valid_new_name(final)) { errno = EPERM; return -1; }
-            int has_temporary = 0, has_final = 0;
-            int same = same_entry(volume, folder, temporary, folder, final,
-                                  &has_temporary, &has_final);
-            if (!has_temporary) continue;
-            if (same ? unlink_name(volume, folder, temporary) :
-                !has_final ? rename_entry(volume, folder, temporary, final, NULL) : 0)
-                return -1;
-        } else {
-            errno = EPERM;
-            return -1;
+    if (strlen(value) != 16 || strspn(value, "0123456789abcdef") != 16) return EINVAL;
+    *reference = strtoull(value, NULL, 16);
+    return MREF(*reference) < FILE_first_user || !MSEQNO(*reference) ? EINVAL : 0;
+}
+
+/* Parse the entire untrusted journal before any write. Version 2 binds
+   entries to MFT record/sequence pairs and detects torn/truncated text.
+   Legacy records remain readable, but ambiguous replacements are refused. */
+static int parse_journal(char *text, RecoveryEntry *entries, size_t *count)
+{
+    const char prefix[] = "OpenHDD-Journal\t2\t";
+    int versioned = !strncmp(text, prefix, sizeof(prefix) - 1);
+    if (versioned) {
+        char *body = strchr(text, '\n');
+        if (!body || body - text != (ptrdiff_t)(sizeof(prefix) - 1 + 64)) return EINVAL;
+        unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+        char hex[65];
+        ++body;
+        if (!CC_SHA256(body, (CC_LONG)strlen(body), digest)) return EIO;
+        for (size_t i = 0; i < sizeof(digest); ++i)
+            snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+        if (memcmp(text + sizeof(prefix) - 1, hex, 64)) return EINVAL;
+        text = body;
+    }
+    char *line;
+    while ((line = strsep(&text, "\n"))) {
+        if (!*line) { if (text) return EINVAL; break; }
+        if (*count == MAX_ITEMS) return EFBIG;
+        char *fields[7], *field;
+        size_t n = 0;
+        while ((field = strsep(&line, "\t"))) {
+            if (n == 7) return EINVAL;
+            fields[n++] = field;
         }
+        if (strlen(fields[0]) != 1) return EINVAL;
+        char type = fields[0][0];
+        size_t expected = type == 'L' ? 5 : 4;
+        if (type != 'L' && type != 'R' && type != 'C') return EINVAL;
+        if (versioned) expected += type == 'R' ? 3 : 1;
+        if (n != expected) return EINVAL;
+        RecoveryEntry *entry = &entries[(*count)++];
+        entry->type = type;
+        entry->folder[0] = fields[1];
+        entry->name[0] = fields[2];
+        entry->folder[1] = type == 'L' ? fields[3] : fields[1];
+        entry->name[1] = type == 'L' ? fields[4] : fields[3];
+        if (!recovery_directory(entry->folder[0]) || !recovery_directory(entry->folder[1]) ||
+            !oh_ntfs_valid_new_name(entry->name[1]) || (!*entry->folder[1] && protected_path(entry->name[1])) ||
+            (type == 'L' ? !oh_ntfs_valid_new_name(entry->name[0]) || (!*entry->folder[0] && protected_path(entry->name[0])) :
+             !temporary_name(entry->name[0], type == 'R' ? old_prefix : pending_prefix)))
+            return EPERM;
+        if (versioned) {
+            if (recovery_reference(fields[type == 'L' ? 5 : 4], &entry->reference[0])) return EINVAL;
+            entry->reference[1] = entry->reference[0];
+            if (type == 'R') {
+                if (recovery_reference(fields[5], &entry->reference[1]) ||
+                    strlen(fields[6]) != 64 || strspn(fields[6], "0123456789abcdef") != 64)
+                    return EINVAL;
+                entry->digest = fields[6];
+            }
+        }
+    }
+    return *count ? 0 : EINVAL;
+}
+
+typedef struct {
+    uint64_t folder;
+    uint16_t *key;
+    int length;
+} RecoveryName;
+
+static int compare_recovery_names(const void *a, const void *b)
+{
+    const RecoveryName *left = a, *right = b;
+    if (left->folder != right->folder) return left->folder < right->folder ? -1 : 1;
+    return compare_index_keys(left->key, left->length, right->key, right->length);
+}
+
+/* A surviving inode is insufficient evidence that the replacement's bytes
+   survived repair. Recheck its saved digest before discarding the backup. */
+static int verify_recovered_file(OHNTFSVolume *view, const OHNTFSItem *item,
+                                  const char *expected)
+{
+    unsigned char *buffer = malloc(IO_CHUNK);
+    if (!buffer) return ENOMEM;
+    CC_SHA256_CTX sha;
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    char hex[65];
+    int status = CC_SHA256_Init(&sha) ? 0 : EIO;
+    for (uint64_t offset = 0; offset < item->size && !status; ) {
+        uint64_t amount = item->size - offset;
+        if (amount > IO_CHUNK) amount = IO_CHUNK;
+        if (oh_ntfs_read(view, item->inode, offset, buffer, amount) != (int64_t)amount ||
+            !CC_SHA256_Update(&sha, buffer, (CC_LONG)amount)) status = EIO;
+        offset += amount;
+    }
+    if (!status && !CC_SHA256_Final(digest, &sha)) status = EIO;
+    if (!status) {
+        for (size_t i = 0; i < sizeof(digest); ++i)
+            snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+        if (strcmp(hex, expected)) status = EIO;
+    }
+    free(buffer);
+    return status;
+}
+
+/* Resolve all paths in a read-only view, distinguishing absence from I/O
+   errors. No action may remove the last name, target a reused record, or
+   overlap another record's names (including NTFS case aliases). */
+static int plan_recovery(Target *target, RecoveryEntry *entries, size_t count,
+                          PendingList *pending)
+{
+    OHNTFSVolume *view = NULL;
+    uint32_t warnings = 0;
+    int status = readonly_open(target, &view, &warnings);
+    if (status) return status;
+    if (warnings) status = EBUSY;
+    RecoveryName *names = calloc(2 * count + 1, sizeof(*names));
+    if (!names) status = ENOMEM;
+    for (size_t i = 0; i < count && !status; ++i) {
+        RecoveryEntry *entry = &entries[i];
+        OHNTFSItem items[2] = { 0 };
+        int present[2] = { 0 };
+        for (size_t j = 0; j < 2 && !status; ++j) {
+            RecoveryName *name = &names[2 * i + j];
+            status = resolve_plain_directory(view, entry->folder[j], &name->folder);
+            if (!status) status = oh_ntfs_name_key(view, entry->name[j], &name->key, &name->length);
+            if (status) break;
+            status = oh_ntfs_lookup(view, name->folder, entry->name[j], &items[j]);
+            if (status == ENOENT) { status = 0; continue; }
+            if (status) break;
+            present[j] = 1;
+            if (items[j].special || items[j].inode < FILE_first_user || !items[j].hard_link_count ||
+                (entry->type == 'R' && items[j].kind != 1)) status = EPERM;
+            if (entry->reference[j] && items[j].reference != entry->reference[j] &&
+                !(entry->type == 'R' && j == 1 && items[j].reference == entry->reference[0]))
+                status = ESTALE;
+        }
+        if (status) break;
+        if (!present[0] && !present[1]) { status = ENOENT; break; }
+        if (entry->digest && present[1] && items[1].reference == entry->reference[1]) {
+            status = verify_recovered_file(view, &items[1], entry->digest);
+            if (status) break;
+        }
+        int same = present[0] && present[1] && items[0].reference == items[1].reference;
+        if (present[0] && present[1]) {
+            if (same) {
+                if (items[0].hard_link_count < 2 || items[1].hard_link_count < 2) status = EPERM;
+            } else if (entry->type != 'R' || !entry->reference[0]) {
+                status = EPERM; /* ambiguous legacy replacement or mismatched link */
+            }
+            entry->action = 1;
+        } else if (present[0] && entry->type != 'L') {
+            entry->action = 2;
+        }
+        if (entry->type == 'C' && !*entry->folder[0]) {
+            for (size_t j = 0; j < pending->count; ++j)
+                if (!strcmp(pending->entries[j].name, entry->name[0]))
+                    pending->entries[j].journaled = 1;
+        }
+    }
+    if (!status) {
+        qsort(names, 2 * count, sizeof(*names), compare_recovery_names);
+        for (size_t i = 1; i < 2 * count; ++i)
+            if (!compare_recovery_names(&names[i - 1], &names[i])) { status = EPERM; break; }
+    }
+    for (size_t i = 0; i < pending->count && !status; ++i)
+        if (pending->entries[i].directory && !pending->entries[i].journaled) status = EPERM;
+    for (size_t i = 0; names && i < 2 * count; ++i) free(names[i].key);
+    free(names);
+    oh_ntfs_close(view);
+    return target->io_failed ? EIO : status;
+}
+
+static int apply_journal(ntfs_volume *volume, const RecoveryEntry *entries, size_t count)
+{
+    for (size_t i = 0; i < count; ++i) {
+        const RecoveryEntry *entry = &entries[i];
+        int result = entry->action == 1 ? unlink_name(volume, entry->folder[0], entry->name[0]) :
+            entry->action == 2 ? rename_entry(volume, entry->folder[0], entry->name[0], entry->name[1], NULL) : 0;
+        if (result) return -1;
+        #ifdef OPENHDD_TESTING
+        if (getenv("OPENHDD_TEST_ABORT_RECOVERY_AFTER_ENTRY")) {
+            ntfs_umount(volume, FALSE);
+            _exit(86);
+        }
+        #endif
     }
     return 0;
 }
 
-/* Temporary names left by an interrupted session, on a volume that is no
-   longer dirty (Windows has checked it). Replacements in the journal are
-   settled first; then only OpenHDD's own temporaries are removed: either
-   unpublished partial files or the second name of a file that was already
-   published. The removal is itself a marked session. */
-static int remove_pending(Target *target, size_t *removed)
+/* Only a clean volume can be recovered. Validate the entire journal and
+   pending list before marking it dirty; keep all artifacts on ambiguity. */
+static int remove_pending(Target *target, size_t *removed, int *failure_stage)
 {
     PendingList list = { 0 };
     OHNTFSVolume *view = NULL;
     uint32_t warnings = 0;
     char *journal = NULL;
+    RecoveryEntry *entries = NULL;
+    size_t entry_count = 0;
     int status = readonly_open(target, &view, &warnings);
     if (status) return status;
     status = warnings ? EBUSY : oh_ntfs_list(view, FILE_root, collect_pending, &list);
     oh_ntfs_close(view);
     if (!status && target->io_failed) status = EIO;
-    if (!status && list.journal) status = read_journal(target, &journal);
-    if (status || (!list.count && !list.journal)) { free(list.names); return status; }
+    if (!status && list.journal) {
+        status = read_journal(target, &journal);
+        if (!status) {
+            entries = calloc(MAX_ITEMS, sizeof(*entries));
+            status = entries ? parse_journal(journal, entries, &entry_count) : ENOMEM;
+        }
+    }
+    if (!status && (list.count || list.journal)) status = plan_recovery(target, entries, entry_count, &list);
+    if (status) {
+        note_error("recovery journal or temporary entries are invalid or ambiguous; preserved without changes");
+        goto out;
+    }
+    if (!list.count && !list.journal) goto out;
+    if (failure_stage) *failure_stage = 2;
     if (set_volume_dirty(target, 1)) { status = phase_error(target); goto out; }
     ntfs_volume *volume = mount_rw(target);
     if (!volume) { status = phase_error(target); goto out; }
-    int result = journal ? apply_journal(volume, journal) : 0;
+    int result = apply_journal(volume, entries, entry_count);
     for (size_t i = 0; i < list.count && !result; ++i) {
-        ntfs_inode *entry = ntfs_pathname_to_inode(volume, NULL, list.names[i]);
-        if (!entry && errno == ENOENT && journal) continue; /* settled by the journal */
-        ntfs_inode *root = ntfs_inode_open(volume, FILE_root);
-        ntfschar *wide = NULL;
-        int count = ntfs_mbstoucs(list.names[i], &wide);
-        if (!root || !entry || count <= 0 ||
-            (entry->mrec->flags & MFT_RECORD_IS_DIRECTORY)) {
-            if (entry) ntfs_inode_close(entry);
-            if (root) ntfs_inode_close(root);
-            result = -1;
-        } else if (ntfs_delete(volume, list.names[i], entry, root, wide, (u8)count)) {
-            result = -1; /* ntfs_delete closes both inodes */
-        }
-        free(wide);
+        PendingEntry *pending = &list.entries[i];
+        if (pending->journaled) continue; /* already handled, including directories */
+        result = unlink_name(volume, "", pending->name);
     }
     int failure = result ? errno : 0;
     if (ntfs_umount(volume, FALSE)) result = -1;
     if (durable_sync(target)) result = -1;
-    /* The journal goes last, in its own mount, once every entry it names
-       is settled on the drive. */
+    /* Keep the journal until every recovery action is durable. */
     if (!result && journal && remove_journal(target)) result = -1;
     if (result) { if (failure) errno = failure; status = phase_error(target); goto out; }
     if (set_volume_dirty(target, 0)) { status = phase_error(target); goto out; }
     *removed = list.count + (journal ? 1 : 0);
 out:
+    free(entries);
     free(journal);
-    free(list.names);
+    free(list.entries);
     return status;
 }
 
@@ -1677,7 +1851,7 @@ static int roll_back(Target *target, const char *const *directories,
     if (durable_sync(target)) result = -1;
     if (result) return -1;
     size_t removed = 0;
-    int status = remove_pending(target, &removed);
+    int status = remove_pending(target, &removed, NULL);
     if (status) { errno = status; return -1; }
     if (target->own_dirty && set_volume_dirty(target, 0)) return -1;
     uint32_t warnings = 0;
@@ -1726,7 +1900,8 @@ static int duplicate_names(const char *const *directories,
         if (!missing[i]) continue;
         char parent[4097];
         const char *leaf = NULL;
-        if (split_path(directories[i], parent, sizeof(parent), &leaf)) { status = EINVAL; break; }
+        if (split_path(directories[i], parent, sizeof(parent), &leaf) ||
+            !oh_ntfs_valid_new_name(leaf)) { status = EINVAL; break; }
         keys[used].key = entry_key(parent, leaf);
         keys[used].index = count + i;
         if (!keys[used++].key) status = ENOMEM;
@@ -1772,7 +1947,8 @@ static int plan_copy(Target *target, const char *const *directories,
         }
         char parent[4097];
         const char *leaf = NULL;
-        if (split_path(directories[i], parent, sizeof(parent), &leaf)) { status = EINVAL; break; }
+        if (split_path(directories[i], parent, sizeof(parent), &leaf) ||
+            !oh_ntfs_valid_new_name(leaf)) { status = EINVAL; break; }
         status = 0;
         int parent_planned = 0;
         for (size_t j = 0; j < i && !parent_planned; ++j)
@@ -1824,6 +2000,7 @@ static int plan_copy(Target *target, const char *const *directories,
         if (old_item.kind != 1) { status = EISDIR; break; }
         staged[i].replacing = 1;
         staged[i].old_inode = existing->inode;
+        staged[i].old_reference = old_item.reference;
         make_temporary_name(staged[i].old, old_prefix);
     }
     index_free(&index);
@@ -1885,7 +2062,7 @@ int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
             folder[0] == '/' || (*folder && !oh_ntfs_valid_directory_path(folder)))
             status = EINVAL;
         else if ((*folder && protected_path(folder)) ||
-                 !strncmp(items[i].destination_name, ".OpenHDD-", 9))
+                 (!*folder && protected_path(items[i].destination_name)))
             status = EACCES;
         if (!status && (fstat(items[i].source_fd, &sources[i]) ||
             !S_ISREG(sources[i].st_mode) || sources[i].st_size < 0 ||
@@ -1913,8 +2090,7 @@ int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
     status = volume_scan(&target, &free_bytes, safety_warnings);
     if (status == EINPROGRESS && !*safety_warnings && removed_pending) {
         size_t removed = 0;
-        *failure_stage = 2;
-        status = remove_pending(&target, &removed);
+        status = remove_pending(&target, &removed, failure_stage);
         if (status) goto out;
         *removed_pending = removed;
         *failure_stage = 1;
@@ -2082,10 +2258,12 @@ static int protected_path(const char *path)
     const char *first_end = strchr(path, '/');
     size_t first = first_end ? (size_t)(first_end - path) : strlen(path);
     if (first && path[0] == '$') return 1;
-    if (first == 25 && !strncmp(path, "System Volume Information", 25)) return 1;
-    const char *leaf = strrchr(path, '/');
-    leaf = leaf ? leaf + 1 : path;
-    return !strncmp(leaf, ".OpenHDD-", 9);
+    if (first == 25 && !strncasecmp(path, "System Volume Information", 25)) return 1;
+    for (const char *part = path; part; part = strchr(part, '/')) {
+        if (*part == '/') ++part;
+        if (!strncasecmp(part, ".OpenHDD-", 9)) return 1;
+    }
+    return 0;
 }
 
 typedef struct {
@@ -2285,6 +2463,12 @@ static int rename_entry(ntfs_volume *volume, const char *parent_path,
     #endif
     if (result || unlink_name(volume, parent_path, old_name)) return -1;
     if (!case_only) return 0;
+    #ifdef OPENHDD_TESTING
+    if (getenv("OPENHDD_TEST_ABORT_AFTER_CASE_UNLINK")) {
+        ntfs_umount(volume, FALSE);
+        _exit(86);
+    }
+    #endif
     directory = open_directory(volume, parent_path);
     ni = directory ? lookup_child(volume, directory, temporary) : NULL;
     result = ni ? link_name(ni, directory, new_name) : -1;
@@ -2347,6 +2531,7 @@ typedef struct {
     uint64_t parent_inode;
     uint64_t inode;
     uint64_t destination_inode;
+    uint64_t reference;
     int directory;
     char temporary[PENDING_LENGTH + 1]; /* case-only rename */
 } EditPlan;
@@ -2374,6 +2559,12 @@ static int plan_edits(Target *target, const OHEdit *edits, EditPlan *plans,
         } else {
             if (split_path(edit->path, plan->parent, sizeof(plan->parent),
                            &plan->leaf)) { status = EINVAL; break; }
+            if (edit->kind != OH_EDIT_DELETE &&
+                (!oh_ntfs_valid_new_name(plan->leaf) || !recovery_directory(plan->parent) ||
+                 (edit->kind == OH_EDIT_MOVE && !recovery_directory(edit->name)))) {
+                status = EINVAL;
+                break;
+            }
             status = oh_ntfs_resolve_directory(volume, plan->parent, &plan->parent_inode);
             if (status) break;
             OHNTFSItem item;
@@ -2381,6 +2572,7 @@ static int plan_edits(Target *target, const OHEdit *edits, EditPlan *plans,
             if (status) break;
             if (item.special) { status = ENOTSUP; break; }
             plan->inode = item.inode;
+            plan->reference = item.reference;
             plan->directory = item.kind == 2;
             if (edit->kind == OH_EDIT_MOVE) {
                 status = resolve_plain_directory(volume, edit->name,
@@ -2497,7 +2689,7 @@ static int write_edit_journal(Target *target, const OHEdit *edits, EditPlan *pla
         if (edits[i].kind != OH_EDIT_RENAME && edits[i].kind != OH_EDIT_MOVE) continue;
         make_pending_name(plans[i].temporary);
         length += 2 * strlen(plans[i].parent) + strlen(edits[i].name) +
-            2 * strlen(plans[i].leaf) + PENDING_LENGTH + 8;
+            2 * strlen(plans[i].leaf) + PENDING_LENGTH + 25;
     }
     *journaled = 0;
     if (!length) return 0;
@@ -2508,15 +2700,18 @@ static int write_edit_journal(Target *target, const OHEdit *edits, EditPlan *pla
     for (size_t i = 0; i < count; ++i) {
         const EditPlan *plan = &plans[i];
         if (edits[i].kind == OH_EDIT_MOVE)
-            used += (size_t)snprintf(text + used, length + 1 - used, "L\t%s\t%s\t%s\t%s\n",
-                                     plan->parent, plan->leaf, edits[i].name, plan->leaf);
+            used += (size_t)snprintf(text + used, length + 1 - used, "L\t%s\t%s\t%s\t%s\t%016llx\n",
+                                     plan->parent, plan->leaf, edits[i].name, plan->leaf,
+                                     (unsigned long long)plan->reference);
         else if (edits[i].kind == OH_EDIT_RENAME) {
             if (same_name_ignoring_case(plan->leaf, edits[i].name))
-                used += (size_t)snprintf(text + used, length + 1 - used, "C\t%s\t%s\t%s\n",
-                                         plan->parent, plan->temporary, edits[i].name);
+                used += (size_t)snprintf(text + used, length + 1 - used, "C\t%s\t%s\t%s\t%016llx\n",
+                                         plan->parent, plan->temporary, edits[i].name,
+                                         (unsigned long long)plan->reference);
             else
-                used += (size_t)snprintf(text + used, length + 1 - used, "L\t%s\t%s\t%s\t%s\n",
-                                         plan->parent, plan->leaf, plan->parent, edits[i].name);
+                used += (size_t)snprintf(text + used, length + 1 - used, "L\t%s\t%s\t%s\t%s\t%016llx\n",
+                                         plan->parent, plan->leaf, plan->parent, edits[i].name,
+                                         (unsigned long long)plan->reference);
         }
     }
     int result = write_journal_text(target, text, used);
@@ -2550,6 +2745,8 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
         if (edit->kind == OH_EDIT_MKDIR) {
             if (!oh_ntfs_valid_directory_path(edit->path) ||
                 !oh_ntfs_valid_new_name(edit->name)) return EINVAL;
+            if ((edit->path && protected_path(edit->path)) ||
+                ((!edit->path || !*edit->path) && protected_path(edit->name))) return EACCES;
             continue;
         }
         if (edit->kind != OH_EDIT_DELETE && edit->kind != OH_EDIT_RENAME &&
@@ -2575,8 +2772,7 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
     int status = volume_scan(&target, NULL, safety_warnings);
     if (status == EINPROGRESS && !*safety_warnings && removed_pending) {
         size_t removed = 0;
-        *failure_stage = 2;
-        status = remove_pending(&target, &removed);
+        status = remove_pending(&target, &removed, failure_stage);
         if (status) goto out;
         *removed_pending = removed;
         *failure_stage = 1;

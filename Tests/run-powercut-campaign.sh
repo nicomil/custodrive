@@ -21,6 +21,7 @@
 # old or the new content under the name; tree cuts a folder copy.
 # PARTITION_IMAGE must already contain /old.bin (defaults to a fresh fixture).
 # EXPORT_DIR receives sample images from nine cuts spread over the session.
+# Exit 77: local invariants held, but some cases still need Windows recovery.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -97,6 +98,13 @@ committed() { # image: the operation's effect is complete and readable
   esac
 }
 base_hash=$(shasum -a 256 "$base" | awk '{print $1}')
+evidence="$root/Build/evidence/powercut/$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+mkdir -p "$evidence"
+cp "$base" "$evidence/base.img"
+cp "$work"/*.bin "$evidence/"
+[ ! -f "$work/tree.manifest" ] || cp "$work/tree.manifest" "$evidence/"
+git -C "$root" diff HEAD -- Sources Scripts Tests > "$evidence/working-tree.patch"
+printf 'cut\tseed\tclassification\n' > "$evidence/cases.tsv"
 
 cp "$base" "$work/count.img"
 writes=$(OPENHDD_TEST_POWERCUT_AT_WRITE=999999999 OPENHDD_TEST_REPORT_WRITES=1 \
@@ -183,6 +191,7 @@ while [ "$cut" -le "$writes" ]; do
       VIOLATION) violations=$((violations + 1))
         echo "VIOLATION at cut $cut seed $seed: $state" >&2 ;;
     esac
+    printf '%s\t%s\t%s\n' "$cut" "$seed" "$class" >> "$evidence/cases.tsv"
     # Samples for Windows: seed 1 at nine cuts spread over the whole session.
     if [ -n "$export_dir" ] && [ "$class" != untouched ] && [ "$seed" -eq 1 ] &&
        { [ $(( (cut - 2) % step )) -eq 0 ] || [ "$cut" -eq "$writes" ]; }; then
@@ -196,6 +205,30 @@ done
 printf 'sector=%s writes=%s runs=%s untouched=%s marked=%s damaged=%s committed=%s unreadable=%s violations=%s\n' \
   "${OPENHDD_TEST_POWERCUT_SECTOR:-512}" "$writes" "$runs" "$untouched" "$marked" "$damaged" "$committed" "$unreadable" "$violations"
 [ "$edit" != replace ] || printf 'replace recovery: recovered=%s left-to-windows=%s\n' "$recovered" "$unrepairable"
+python3 - "$evidence" "$root" "$tool" "${edit:-copy}" \
+  "${OPENHDD_TEST_POWERCUT_SECTOR:-512}" "$seeds" "$writes" "$base_hash" <<'PY'
+import csv, hashlib, json, pathlib, subprocess, sys
+directory, root, tool, operation, sector, seeds, writes, base_hash = sys.argv[1:]
+out = pathlib.Path(directory)
+cases = list(csv.DictReader((out / 'cases.tsv').open(), delimiter='\t'))
+counts = {name: sum(c['classification'] == name for c in cases)
+          for name in ('untouched', 'marked', 'damaged', 'committed', 'unreadable', 'VIOLATION')}
+pending = counts['marked'] + counts['damaged'] + counts['unreadable']
+summary = dict(commit=subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip(),
+               working_tree_patch_sha256=hashlib.sha256((out / 'working-tree.patch').read_bytes()).hexdigest(),
+               tool_sha256=hashlib.sha256(pathlib.Path(tool).read_bytes()).hexdigest(),
+               baseline_sha256=base_hash, operation=operation, sector=int(sector),
+               seeds=int(seeds), writes=int(writes), cases=len(cases), classifications=counts,
+               local_invariants='FAIL' if counts['VIOLATION'] else 'PASS',
+               recovery='INCONCLUSIVE' if pending else 'NOT_REQUIRED',
+               windows_verified=False, cases_requiring_windows=pending,
+               export_scope='representative samples only, not every unresolved case')
+(out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+PY
+echo "Evidence: $evidence/summary.json"
 test "$violations" -eq 0
-echo 'PASS: every cut left the volume untouched, marked for checking or committed; old file intact'
-echo 'Windows must still confirm that chkdsk /f repairs the marked images.'
+echo 'LOCAL PASS: no detected clean-but-incomplete commit; readable committed files checked.'
+if [ $((marked + damaged + unreadable)) -gt 0 ]; then
+  echo "INCONCLUSIVE: $((marked + damaged + unreadable)) cases require Windows repair and content verification (exit 77)."
+  exit 77
+fi

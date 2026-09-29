@@ -197,19 +197,33 @@ final class EditSession: @unchecked Sendable {
         return .entries(entries)
     }
 
-    /// Copies a file of the volume into the session's temporary folder, for
-    /// opening or Quick Look while the drive is held by the session.
+    /// Read-only Quick Look copy. The directory also denies replacement by
+    /// editors that save atomically; opening an editable copy uses export(to:).
     func export(_ path: String) -> URL? {
         let folder = temporaryFolder.appendingPathComponent(UUID().uuidString)
         guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil else {
             return nil
         }
         let target = folder.appendingPathComponent(VolumePath.name(path))
-        guard let reply = call(["export", path, target.path]), reply.first == "ok" else {
+        guard export(path, to: target) else {
+            try? FileManager.default.removeItem(at: folder)
+            return nil
+        }
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: target.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        } catch {
             try? FileManager.default.removeItem(at: folder)
             return nil
         }
         return target
+    }
+
+    /// A user-chosen copy survives the session. The engine refuses existing
+    /// destinations rather than overwriting a local file.
+    func export(_ path: String, to target: URL) -> Bool {
+        guard let reply = call(["export", path, target.path]) else { return false }
+        return reply.first == "ok"
     }
 
     /// A copy or an edit; the reply carries the diagnostics as last field.
@@ -232,6 +246,11 @@ final class EditSession: @unchecked Sendable {
         }
         try? input.close()
         process.waitUntilExit()
+        let previews = (try? FileManager.default.contentsOfDirectory(
+            at: temporaryFolder, includingPropertiesForKeys: nil)) ?? []
+        for folder in previews {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        }
         try? FileManager.default.removeItem(at: temporaryFolder)
         return String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     }

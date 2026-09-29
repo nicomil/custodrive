@@ -10,6 +10,7 @@ typedef int64_t (*OHNTFSReadBlocks)(void *context, uint64_t offset,
 
 typedef struct {
     uint64_t inode;
+    uint64_t reference; /* MFT record plus sequence: detects record reuse */
     uint64_t size;
     uint64_t allocated_size;
     int64_t created_ns;

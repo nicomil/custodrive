@@ -26,9 +26,33 @@ parte del formato che il recupero riconosce.
 | `Tests/run-edit-probe.sh` | nuova cartella, rinomina, eliminazione, rifiuti, interruzioni |
 | `Tests/run-v3-probe.sh` | cartelle, 300 file per lotto, sostituzione con diario, spostamento, annullamento |
 | `Tests/run-session-probe.sh` | sessione di modifica: protocollo, sfoglia, esporta, rifiuti, fine input, annullamento |
-| `Tests/run-ui-selftest.sh IMMAGINE` | interfaccia vera: drop dal Finder, trascinamento, Quick Look, sessione |
+| `Tests/run-recovery-probe.sh` | diari contraffatti/troncati, alias NTFS, riferimenti MFT obsoleti, hash sostituzione, rinomina cartelle e recupero nuovamente interrotto; rifiuti senza modifiche all'immagine |
+| `Tests/run-ui-selftest.sh IMMAGINE` | immagine MBR sacrificabile con `old.bin` e `Documenti`: drop, trascinamento, Quick Look non modificabile, copia esportata conservata dopo fine sessione |
 | `OPENHDD_CAMPAIGN_EDIT=… Tests/run-powercut-campaign.sh` | tagli di corrente a ogni scrittura (copia, cartelle, sostituzione, spostamento, rinomina, nuova cartella, eliminazione) |
 | `Tests/prepare-windows-v3-cases.sh` + `Tests/windows/verify-v1-cases.ps1` | verifica `chkdsk` su Windows di casi completati, interrotti e tagliati |
+
+### Come leggere gli esiti
+
+`run-powercut-campaign.sh` distingue **LOCAL PASS** (nessuna violazione
+locale rilevata) da recuperabilità. Se esistono casi marcati, danneggiati o
+illeggibili restituisce **77 / INCONCLUSIVE**, anche senza violazioni locali.
+Uscita 1 indica errore; uscita 0 richiede nessun caso ancora da riparare.
+Gli script di preparazione Windows accettano 77 per proseguire l'esportazione,
+senza convertirlo in una prova di recupero superata.
+
+Ogni campagna salva `summary.json`, `cases.tsv`, baseline, input, commit,
+diff locale e hash del motore in `Build/evidence/powercut/`. L'esportazione
+per Windows contiene campioni, non tutti i casi irrisolti. La verifica
+PowerShell rifiuta selezioni vuote, conserva le copie fallite e restituisce
+77 se i contenuti sopravvivono soltanto in percorsi diversi (`PASS_MOVED`).
+Verifica filesystem e file elencati: **non** certifica il successivo recupero
+del diario sul Mac. Per questo passaggio occorre conservare `repaired.vhd`
+con `-KeepRepaired`, estrarne una copia della partizione e verificare il
+motore Mac, nomi e hash finali. Gli originali non vanno montati in scrittura.
+
+Il diario v2 viene validato integralmente prima di scrivere, usando identità
+MFT e hash dei contenuti sostituiti. Diari legacy ambigui vengono rifiutati
+e conservati. Specifica e limiti: [piano corrente](piano-scrittura-v1.md#perimetro-attuale--29-settembre-2026).
 
 ## Motore da riga di comando
 
@@ -46,7 +70,37 @@ sudo Build/OpenHDDCopy --disk disk4s1 --delete "vecchio.bin"
 Build/OpenHDDCopy --disk disk4s1 --session --yes   # sessione di modifica (protocollo in docs/piano-scrittura-v1.md)
 ```
 
-## Collaudo della scrittura
+## Verifica locale del 29 settembre 2026
+
+Branch `codex/recovery-hardening`, Mac Apple Silicon con macOS 27:
+build Release e suite bridge, copia, modifiche, v3, sessione e recupero
+superate. Self-test
+dell'app superato su immagine MBR sacrificabile: anteprima non modificabile
+(anche con salvataggio atomico), esportazione conservata dopo fine sessione,
+rimontaggio pulito e contenuti verificati.
+
+Campagne con un seme, interruzione a ogni scrittura:
+
+| Operazione | Settore simulato | Casi | Intatti | Marcati | Illeggibili | Violazioni locali |
+|---|---:|---:|---:|---:|---:|---:|
+| Copia | 512 B | 21 | 1 | 6 | 14 | 0 |
+| Sostituzione | 512 B | 48 | 1 | 12 | 35 | 0 |
+| Rinomina | 512 B | 25 | 1 | 6 | 18 | 0 |
+| Copia | 4096 B | 21 | 1 | 17 | 3 | 0 |
+
+Totale **115 casi**, 111 ancora da verificare su Windows: tutte le campagne
+terminano con 77, non con un PASS di recuperabilità. Nessuna prova su disco
+fisico in questa verifica. Gli script PowerShell sono stati modificati ma
+non eseguiti: runtime PowerShell e ambiente Windows non disponibili in
+questa sessione. Gli esiti storici sotto non colmano questa lacuna.
+
+## Collaudo storico della scrittura
+
+Gli esiti del 28 settembre qui sotto sono registrazioni delle versioni
+precedenti, non una ricertificazione del branch `codex/recovery-hardening`.
+Per il nuovo diario e i nuovi percorsi di recupero restano da eseguire
+Windows/chkdsk, ripresa sul Mac e prove USB sacrificabili. Le simulazioni
+locali non chiudono questi gate; manca inoltre la prova su un secondo Mac.
 
 | Gate | Prova | Esito (28 settembre 2026) |
 |---|---|---|

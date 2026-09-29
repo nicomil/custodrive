@@ -27,6 +27,7 @@ xcodegen generate >/dev/null
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -quiet -project OpenHDD.xcodeproj -scheme OpenHDDLocal -configuration Release \
   -derivedDataPath Build/DerivedDataSelfTest CODE_SIGNING_ALLOWED=NO \
+  PRODUCT_BUNDLE_IDENTIFIER=app.custodrive.selftest \
   SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) OPENHDD_LOCAL OPENHDD_UI_SELFTEST' build
 app="$work/OpenHDDSelfTest.app"
 ditto Build/DerivedDataSelfTest/Build/Products/Release/Custodrive.app "$app"
@@ -46,8 +47,7 @@ sips -s format png /System/Library/CoreServices/CoreTypes.bundle/Contents/Resour
   --out "$src/foto 1.png" >/dev/null
 printf 'nota è\n' > "$src/nota.txt"
 
-osascript -e 'tell application id "app.custodrive.mac" to quit' >/dev/null 2>&1 || true
-sleep 1
+# Separate bundle identity: testing must not quit a user's live edit session.
 OPENHDD_UI_SELFTEST_DISK="$label" OPENHDD_UI_SELFTEST_REPORT="$work/report.txt" \
 OPENHDD_UI_SELFTEST_SOURCE="$src" "$app/Contents/MacOS/Custodrive" >"$work/app.log" 2>&1 &
 pid=$!

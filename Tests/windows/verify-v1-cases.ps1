@@ -48,6 +48,14 @@ if (Test-Path -LiteralPath $ArtifactDirectory) {
 New-Item -ItemType Directory -Force -Path $ArtifactDirectory | Out-Null
 
 $cases = @(Import-Csv -LiteralPath (Join-Path $CaseDirectory 'cases.tsv') -Delimiter "`t" -Encoding UTF8)
+if ($Only.Count) { $cases = @($cases | Where-Object { $Only -contains $_.case }) }
+if (-not $cases.Count) { throw 'REFUSED: no matching cases; nothing verified' }
+$commitPath = Join-Path $CaseDirectory 'source-commit.txt'
+$sourceCommit = $(if (Test-Path -LiteralPath $commitPath) { (Get-Content -Raw -LiteralPath $commitPath).Trim() } else { 'unrecorded' })
+foreach ($metadata in @('source-commit.txt', 'source-diff.patch', 'engine.sha256')) {
+    $metadataPath = Join-Path $CaseDirectory $metadata
+    if (Test-Path -LiteralPath $metadataPath) { Copy-Item -LiteralPath $metadataPath -Destination $ArtifactDirectory }
+}
 $baseFiles = @(Get-Content -LiteralPath (Join-Path $CaseDirectory 'base-files.sha256') -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
     $parts = $_ -split '  ', 3
     [pscustomobject]@{ Hash = $parts[0].Trim().ToLowerInvariant(); Length = [long]$parts[1]; Path = $parts[2].Trim() }
@@ -85,12 +93,11 @@ function Find-ByHash([string] $Root, [string] $Hash, [long] $Length) {
 
 $summary = @()
 foreach ($case in $cases) {
-    if ($Only.Count -and $Only -notcontains $case.case) { continue }
     $dir = Join-Path $ArtifactDirectory $case.case
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $source = Join-Path $CaseDirectory ($case.case + '.vhd')
     $work = Join-Path $dir 'working.vhd'
-    $r = [ordered]@{ case = $case.case; expect = $case.expect; verdict = 'FAIL'; problems = @() }
+    $r = [ordered]@{ case = $case.case; expect = $case.expect; verdict = 'FAIL'; problems = @(); source_commit = $sourceCommit; scope = 'Windows filesystem repair and recorded file checks only; Mac journal recovery not verified here' }
     $mounted = $false
     $start = Get-Date
     try {
@@ -187,17 +194,24 @@ foreach ($case in $cases) {
     finally {
         if ($mounted) { try { Dismount-DiskImage -ImagePath $work -ErrorAction Stop | Out-Null } catch { $r.problems += 'dismount: ' + $_.Exception.Message } }
         if ($KeepRepaired -contains $case.case -and (Test-Path -LiteralPath $work)) {
-            Copy-Item -LiteralPath $work -Destination (Join-Path $dir 'repaired.vhd')
+            try { Copy-Item -LiteralPath $work -Destination (Join-Path $dir 'repaired.vhd') -ErrorAction Stop }
+            catch { $r.problems += 'save repaired copy: ' + $_.Exception.Message }
         }
         try {
             $r.events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $start.AddSeconds(-1) } -ErrorAction Stop |
                 Where-Object { $_.ProviderName -match 'Ntfs|Chkdsk' } |
                 ForEach-Object { '{0} {1}: {2}' -f $_.ProviderName, $_.Id, ($_.Message -split "`n")[0].Trim() })
         } catch { $r.events = @() }
-        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant() -ne $r.source_sha256) {
-            $r.problems += 'CASE VHD CHANGED'; $r.verdict = 'FAIL'
-        }
-        Remove-Item -LiteralPath $work -Force -ErrorAction SilentlyContinue
+        try {
+            if (-not $r.Contains('source_sha256') -or
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant() -ne $r.source_sha256) {
+                $r.problems += 'CASE VHD CHANGED OR HASH UNAVAILABLE'
+            }
+        } catch { $r.problems += 'source hash: ' + $_.Exception.Message }
+        # A cleanup failure must not leave a stale PASS verdict. Keep failed
+        # working copies for diagnosis, especially if dismount did not finish.
+        if ($r.problems.Count) { $r.verdict = 'FAIL' }
+        if ($r.verdict -ne 'FAIL') { Remove-Item -LiteralPath $work -Force -ErrorAction SilentlyContinue }
         $r | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $dir 'result.json')
     }
     $summary += [pscustomobject]@{
@@ -213,4 +227,8 @@ foreach ($case in $cases) {
 $summary | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $ArtifactDirectory 'summary.json')
 $summary | Format-Table -AutoSize | Out-String -Width 220
 if (@($summary | Where-Object { $_.verdict -eq 'FAIL' }).Count) { exit 1 }
+if (@($summary | Where-Object { $_.verdict -eq 'PASS_MOVED' }).Count) {
+    Write-Host 'INCONCLUSIVE: content survived but original paths did not; manual recovery required.'
+    exit 77
+}
 exit 0

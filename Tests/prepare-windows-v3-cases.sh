@@ -16,6 +16,9 @@ out=$3
 tool="$root/Build/OpenHDDCopyTest"
 OPENHDD_TESTING=1 "$root/Scripts/build-copy-tool.sh"
 mkdir -p "$out"
+git -C "$root" rev-parse HEAD > "$out/source-commit.txt"
+git -C "$root" diff HEAD -- Sources Scripts Tests > "$out/source-diff.patch"
+shasum -a 256 "$tool" > "$out/engine.sha256"
 work=$(mktemp -d "${TMPDIR:-/tmp}/openhdd-v3w.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
@@ -155,8 +158,11 @@ case_line v31-cancelled clean "$windows;absent:Album"
 # target.bin content must never be lost.
 for spec in replace:512 replace:4096 move:512 tree:512 rename:512; do
   op=${spec%:*}; sector=${spec#*:}
+  code=0
   OPENHDD_CAMPAIGN_EDIT=$op OPENHDD_TEST_POWERCUT_SECTOR=$sector OPENHDD_CAMPAIGN_KEEP="$work/fixture-$op-$sector" \
-    "$root/Tests/run-powercut-campaign.sh" "$partition" "$work/samples-$op-$sector" 1 | tail -3
+    "$root/Tests/run-powercut-campaign.sh" "$partition" "$work/samples-$op-$sector" 1 > "$work/campaign.log" 2>&1 || code=$?
+  cat "$work/campaign.log"
+  [ "$code" -eq 0 ] || [ "$code" -eq 77 ] || exit "$code"
   extra=
   case "$op" in
     # Once the new file is published the old one is removed on purpose:

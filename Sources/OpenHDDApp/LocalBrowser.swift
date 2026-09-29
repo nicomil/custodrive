@@ -747,8 +747,28 @@ final class BrowserModel: ObservableObject {
             return
         }
         if entry.isFolder { go(to: entry.path); return }
-        materialize([entry], purpose: "Apertura") { urls in
-            if let url = urls.first { NSWorkspace.shared.open(url) }
+        if editingHere, let session {
+            let panel = NSSavePanel()
+            panel.title = "Esporta e apri una copia"
+            panel.message = "Scegli dove conservare la copia sul Mac. Le modifiche a questa copia non vengono salvate sul disco NTFS."
+            panel.prompt = "Esporta e apri"
+            panel.nameFieldStringValue = entry.name
+            guard panel.runModal() == .OK, let target = panel.url else { return }
+            preparing = "Esportazione di «\(entry.name)»…"
+            Task.detached { [model = self] in
+                let exported = session.export(entry.path, to: target)
+                await MainActor.run {
+                    model.preparing = nil
+                    if exported {
+                        model.status = "Copia salvata sul Mac. Il file sul disco NTFS resta invariato."
+                        NSWorkspace.shared.open(target)
+                    } else {
+                        model.alert("Copia non esportata", "Verifica lo spazio e i permessi della cartella. Se il nome esiste già, scegline uno diverso: nessun file locale viene sovrascritto.")
+                    }
+                }
+            }
+        } else if let mount = record?.mountURL {
+            NSWorkspace.shared.open(mount.appendingPathComponent(entry.path))
         }
     }
 

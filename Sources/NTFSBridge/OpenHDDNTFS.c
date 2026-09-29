@@ -151,6 +151,7 @@ static int item_from_inode(ntfs_inode *inode, OHNTFSItem *out)
 {
     memset(out, 0, sizeof(*out));
     out->inode = inode->mft_no;
+    out->reference = MK_MREF(inode->mft_no, le16_to_cpu(inode->mrec->sequence_number));
     out->kind = (inode->mrec->flags & MFT_RECORD_IS_DIRECTORY) ? 2 : 1;
     out->hard_link_count = le16_to_cpu(inode->mrec->link_count);
     out->special = (inode->flags & (FILE_ATTR_REPARSE_POINT | FILE_ATTR_ENCRYPTED)) ? 1 : 0;

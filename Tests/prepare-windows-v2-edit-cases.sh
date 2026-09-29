@@ -14,6 +14,9 @@ out=$3
 tool="$root/Build/OpenHDDCopyTest"
 OPENHDD_TESTING=1 "$root/Scripts/build-copy-tool.sh"
 mkdir -p "$out"
+git -C "$root" rev-parse HEAD > "$out/source-commit.txt"
+git -C "$root" diff HEAD -- Sources Scripts Tests > "$out/source-diff.patch"
+shasum -a 256 "$tool" > "$out/engine.sha256"
 work=$(mktemp -d "${TMPDIR:-/tmp}/openhdd-v2e.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
@@ -92,8 +95,11 @@ done
 
 for op in delete rename; do
   for sector in 512 4096; do
+    code=0
     OPENHDD_CAMPAIGN_EDIT=$op OPENHDD_TEST_POWERCUT_SECTOR=$sector \
-      "$root/Tests/run-powercut-campaign.sh" "$partition" "$work/samples-$op" 1 | tail -2
+      "$root/Tests/run-powercut-campaign.sh" "$partition" "$work/samples-$op" 1 > "$work/campaign.log" 2>&1 || code=$?
+    cat "$work/campaign.log"
+    [ "$code" -eq 0 ] || [ "$code" -eq 77 ] || exit "$code"
   done
   for sample in "$work"/samples-$op/*.img; do
     name=$(basename "$sample" .img)

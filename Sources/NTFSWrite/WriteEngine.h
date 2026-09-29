@@ -47,8 +47,9 @@ int oh_ntfs_safety_preflight(int target_fd, uint64_t target_size,
    listed in `directories` (relative paths, parents before children; ones
    that already exist are kept and merged). An item with replace = 1 swaps
    an existing file of the same name only after the new data is verified;
-   the swap is recorded in a recovery journal so that an interruption always
-   leaves either the old or the new file under the name. `count` may be 0
+   the swap is recorded in a recovery journal. Recovery validates identities
+   and contents before choosing an action; ambiguous states are preserved
+   and refused. This does not guarantee recovery from torn metadata. `count` may be 0
    when only folders are created. */
 int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
                   const char *const *directories, size_t directory_count,
