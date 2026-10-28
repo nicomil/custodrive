@@ -143,6 +143,25 @@ abort v31-abort-move-twonames OPENHDD_TEST_ABORT_WITH_TWO_NAMES=1 "$tool" --imag
 case_line v31-abort-move-twonames repair "$O|old.bin;found:$G|3145728;found:$N|68"
 abort v31-abort-rename-twonames OPENHDD_TEST_ABORT_WITH_TWO_NAMES=1 "$tool" --image "$work/v31-abort-rename-twonames.img" --rename old.bin nuovo.bin
 case_line v31-abort-rename-twonames repair "found:$O|716800;$G|Documenti\\grande.bin;$N|Documenti\\nota.txt"
+# Journal v2 regressions: directories at root and nested, interrupted both
+# while two names exist and while only the application temporary remains.
+for parent in root nested; do
+  folder=Foto
+  [ "$parent" != nested ] || folder=Documenti/Foto
+  for point in twonames temporary; do
+    name="v32-case-$parent-$point"
+    img="$work/$name.img"
+    cp "$partition" "$img"
+    directory=
+    [ "$parent" != nested ] || directory=Documenti
+    "$tool" --image "$img" --mkdir "$directory" Foto >/dev/null
+    "$tool" --image "$img" --dir "$folder" "$work/a.bin" inside.bin >/dev/null
+    hook=OPENHDD_TEST_ABORT_WITH_TWO_NAMES
+    [ "$point" != temporary ] || hook=OPENHDD_TEST_ABORT_AFTER_CASE_UNLINK
+    abort "$name" "$hook=1" "$tool" --image "$img" --rename "$folder" FOTO
+    case_line "$name" repair "$windows;found:$A|819200"
+  done
+done
 img="$work/cancel.img"; cp "$partition" "$img"
 OPENHDD_TEST_SLOW_WRITE_MS=30 "$tool" --image "$img" --manifest "$work/tree.manifest" > /dev/null 2>&1 &
 pid=$!
@@ -156,7 +175,7 @@ case_line v31-cancelled clean "$windows;absent:Album"
 # Power-cut samples. The campaign adds its own fixture (target.bin for a
 # replacement, Foto/Estate/b.bin for a move) to the Windows base; the old
 # target.bin content must never be lost.
-for spec in replace:512 replace:4096 move:512 tree:512 rename:512; do
+for spec in replace:512 replace:4096 move:512 move:4096 tree:512 rename:512 rename:4096; do
   op=${spec%:*}; sector=${spec#*:}
   code=0
   OPENHDD_CAMPAIGN_EDIT=$op OPENHDD_TEST_POWERCUT_SECTOR=$sector OPENHDD_CAMPAIGN_KEEP="$work/fixture-$op-$sector" \
@@ -168,7 +187,7 @@ for spec in replace:512 replace:4096 move:512 tree:512 rename:512; do
     # Once the new file is published the old one is removed on purpose:
     # either content must survive.
     replace) extra=";found:$(h "$work/fixture-$op-$sector/target.bin")|921600|$(h "$work/fixture-$op-$sector/new.bin")|2150400" ;;
-    move) extra=";found:$(h "$work/fixture-$op-$sector/new.bin")|2150400" ;;
+    move|rename) extra=";found:$(h "$work/fixture-$op-$sector/new.bin")|2150400" ;;
   esac
   for sample in "$work"/samples-$op-$sector/*.img; do
     name=v3-$op-$(basename "$sample" .img)

@@ -570,6 +570,7 @@ static void explain_failure(int code, int stage, size_t index, size_t count,
                         "nothing was published.\n", index + 1);
     if (*oh_last_error())
         fprintf(stderr, "Detail: %s.\n", oh_last_error());
+    if (*oh_recovery_error()) fputs(oh_recovery_error(), stderr);
     fprintf(stderr, "Copy failed at stage %d; code %d; item %zu of %zu.\n",
             stage, code, index + 1, count);
     if (stage >= 2)
@@ -1565,6 +1566,7 @@ typedef struct {
     long owner_uid;
     OHView *view;
     int marked; /* a write left the volume marked for checking */
+    char *recovery_refusal; /* freeze writes until this session ends; reads remain available */
 } Session;
 
 static int add_entry(void *opaque, const char *name, const OHEntryInfo *info)
@@ -1596,6 +1598,14 @@ static int ensure_view(Session *session)
 static int session_write(Session *session, CopyRequest *request, const char *progress_path,
                          Message *reply)
 {
+    if (session->recovery_refusal) {
+        fputs("Detail: recovery journal or temporary entries are invalid or ambiguous; preserved without changes.\n", stderr);
+        fputs(session->recovery_refusal, stderr);
+        message_add(reply, "error");
+        message_addf(reply, "%d", EPERM);
+        message_add(reply, "1");
+        return EPERM;
+    }
     close_view(session);
     int stage = 0;
     uint32_t warnings = 0;
@@ -1617,6 +1627,7 @@ static int session_write(Session *session, CopyRequest *request, const char *pro
                         "interrupted copy.\n", removed);
     if (code) {
         if (code != EBADF) explain_failure(code, stage, failed, request_items(request), warnings);
+        if (*oh_recovery_error()) session->recovery_refusal = strdup(oh_recovery_error());
         if (stage >= 2) session->marked = 1;
         message_add(reply, "error");
         message_addf(reply, "%d", code);
@@ -1639,12 +1650,26 @@ static void session_command(Session *session, const Message *request, Message *r
     const char *command = request->fields[0];
     char **args = request->fields + 1;
     int count = (int)request->count - 1;
+    if (!strcmp(command, "inspect-recovery") && count == 0) {
+        close_view(session);
+        int status = oh_inspect_recovery(session->fd, session->size, session->is_device);
+        free(session->recovery_refusal);
+        session->recovery_refusal = status ? strdup(oh_recovery_error()) : NULL;
+        message_add(reply, status ? "error" : "ok");
+        if (status) {
+            message_addf(reply, "%d", status);
+            message_add(reply, "1");
+            explain_failure(status, 1, 0, 0, 0);
+        }
+        return;
+    }
     if (!strcmp(command, "list") && count == 1) {
         int status = ensure_view(session);
         char *path = status ? NULL : relative_copy(args[0]);
         if (!status && !path) status = EINVAL;
         Message entries = { 0 };
-        if (!status) status = oh_view_list(session->view, path, add_entry, &entries);
+        if (!status) status = oh_view_list(session->view, path, session->recovery_refusal != NULL,
+                                          add_entry, &entries);
         free(path);
         if (status) {
             message_add(reply, "error");
@@ -1668,6 +1693,7 @@ static void session_command(Session *session, const Message *request, Message *r
         if (!status && out < 0) status = errno;
         uint64_t copied = 0;
         if (!status) status = oh_view_export(session->view, path, out, &copied);
+        if (!status && fsync(out)) status = errno ? errno : EIO;
         if (out >= 0 && close(out) && !status) status = EIO;
         if (status && out >= 0) unlink(args[1]);
         free(path);
@@ -1742,6 +1768,7 @@ static int run_session(int fd, uint64_t size, int is_device, long owner_uid)
         oh_reset_cancel();
     }
     close_view(&session);
+    free(session.recovery_refusal);
     Message done = { 0 };
     message_add(&done, "ended");
     send_message(&done);

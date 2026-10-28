@@ -106,7 +106,9 @@ int oh_view_open(int target_fd, uint64_t target_size, int is_device,
                  OHView **view, uint32_t *safety_warnings);
 /* Lists `path` ("" for the root); names come back NFC. NTFS system files,
    System Volume Information and OpenHDD's own entries are not listed. */
-int oh_view_list(OHView *view, const char *path, OHViewEntry callback, void *context);
+/* include_recovery exposes application temporaries for read-only salvage. */
+int oh_view_list(OHView *view, const char *path, int include_recovery,
+                 OHViewEntry callback, void *context);
 /* Copies the file at `path` into out_fd (already open for writing). */
 int oh_view_export(OHView *view, const char *path, int out_fd, uint64_t *copied);
 void oh_view_close(OHView *view);
@@ -115,6 +117,11 @@ void oh_reset_cancel(void);
 
 /* Short description of the last low-level failure, or "" when none. */
 const char *oh_last_error(void);
+/* Details of refused recovery, or "". May contain private volume paths;
+   show to the owner only and export solely at their request. */
+const char *oh_recovery_error(void);
+/* Same recovery validation, without any writes. Caller holds exclusive fd. */
+int oh_inspect_recovery(int target_fd, uint64_t target_size, int is_device);
 int oh_copy_new_file(int target_fd, uint64_t target_size, int is_device,
                      int source_fd, const char *destination_name,
                      int *failure_stage, uint32_t *safety_warnings);

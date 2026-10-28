@@ -29,8 +29,15 @@ incluse rinomine di cartelle in radice e ulteriori interruzioni del recupero.
 Le campagne powercut distinguono invarianti locali da recuperabilità:
 uscita **77 / INCONCLUSIVE** se restano casi da verificare su Windows.
 Commit, differenze locali, hash e classificazioni sono conservati in
-`Build/evidence/powercut/`. La validazione Windows e USB del nuovo formato
-resta da eseguire; vedere [sviluppo.md](sviluppo.md).
+`Build/evidence/powercut/`. Il collaudo del 30 settembre aggiunge 14 campagne
+(358 interruzioni) e 89 casi verificati da Windows/chkdsk. Recupero Mac,
+limiti dei campioni e prove USB sono registrati separatamente in
+[sviluppo.md](sviluppo.md#collaudo-assistenza-al-recupero--30-settembre-2026).
+
+Quando il recupero viene rifiutato, la sessione resta consultabile: l’app
+mostra motivo e percorsi attesi, consente il salvataggio dei file leggibili
+e del rapporto, e rivalida soltanto in sola lettura. Lo sblocco richiede
+controlli completi superati; il diario non viene eliminato per aggirarli.
 
 ## Perché cambiare piano
 

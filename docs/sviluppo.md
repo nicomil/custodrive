@@ -30,6 +30,7 @@ parte del formato che il recupero riconosce.
 | `Tests/run-ui-selftest.sh IMMAGINE` | immagine MBR sacrificabile con `old.bin` e `Documenti`: drop, trascinamento, Quick Look non modificabile, copia esportata conservata dopo fine sessione |
 | `OPENHDD_CAMPAIGN_EDIT=… Tests/run-powercut-campaign.sh` | tagli di corrente a ogni scrittura (copia, cartelle, sostituzione, spostamento, rinomina, nuova cartella, eliminazione) |
 | `Tests/prepare-windows-v3-cases.sh` + `Tests/windows/verify-v1-cases.ps1` | verifica `chkdsk` su Windows di casi completati, interrotti e tagliati |
+| `Tests/verify-windows-roundtrip.py CASES WINDOWS_RESULTS NEW_OUTPUT` | copie dei VHD riparati da Windows: ispezione Mac senza scritture, recupero, nomi finali e hash |
 
 ### Come leggere gli esiti
 
@@ -53,6 +54,25 @@ motore Mac, nomi e hash finali. Gli originali non vanno montati in scrittura.
 Il diario v2 viene validato integralmente prima di scrivere, usando identità
 MFT e hash dei contenuti sostituiti. Diari legacy ambigui vengono rifiutati
 e conservati. Specifica e limiti: [piano corrente](piano-scrittura-v1.md#perimetro-attuale--29-settembre-2026).
+
+La sessione esegue `inspect-recovery` prima della prima modifica. Il comando
+riusa il piano di recupero del motore e non scrive. Su rifiuto conserva motivo,
+numero di voce, percorsi attesi e riferimenti MFT; l'app blocca le modifiche,
+mostra anche i temporanei e permette di esportare dati e rapporto sul Mac.
+I percorsi sono aspettative del diario, non risultati di una ricerca in
+`found.000`. Per cartelle intere si riusa il Finder, montato in sola lettura.
+Il nuovo controllo rimuove il blocco solo dopo una validazione completa;
+nessuna cancellazione del diario o opzione di forzatura.
+
+`OPENHDD_UI_SELFTEST_RECOVERY=1 Tests/run-ui-selftest.sh IMMAGINE` usa una
+fixture MBR con `old.bin`, `Documenti` e un diario con entrambi i nomi mancanti.
+Verifica banner, rapporto, esportazione, controlli ripetuti e identità
+byte per byte dell'immagine prima/dopo. `OPENHDD_UI_EVIDENCE=DIR` conserva
+rapporto e schermata. La modalità normale resta il collaudo di modifica.
+
+Compatibilità: le build precedenti non leggono i diari v2. Prima di usare
+questa versione su un disco condiviso, aggiornare tutti i Mac coinvolti.
+Le build vecchie non devono tentare il recupero di una sessione v2 interrotta.
 
 ## Motore da riga di comando
 
@@ -94,13 +114,83 @@ fisico in questa verifica. Gli script PowerShell sono stati modificati ma
 non eseguiti: runtime PowerShell e ambiente Windows non disponibili in
 questa sessione. Gli esiti storici sotto non colmano questa lacuna.
 
+## Collaudo assistenza al recupero — 30 settembre 2026
+
+Suite bridge, copia v1, modifiche v2, v3, sessione e recupero superate.
+Self-test normale e rifiuto del recupero superati su immagini sacrificabili;
+nel secondo caso l'immagine resta identica byte per byte dopo ispezioni,
+esportazione, nuova verifica e chiusura. Build Release verificata.
+
+Matrice aggiuntiva: un seme per operazione e settore simulato, taglio a ogni scrittura.
+I 4096 B modellano la granularità dello strappo, non una prova su hardware 4Kn.
+Le campagne usano fixture diverse: confrontare i conteggi solo con la
+baseline e la provenienza registrate per ciascuna campagna.
+
+| Operazione | Settore | Casi | Intatti | Marcati | Illeggibili | Violazioni locali |
+|---|---:|---:|---:|---:|---:|---:|
+| replace | 512 B | 42 | 1 | 10 | 31 | 0 |
+| replace | 4096 B | 42 | 1 | 36 | 5 | 0 |
+| move | 512 B | 22 | 1 | 11 | 10 | 0 |
+| move | 4096 B | 22 | 1 | 18 | 3 | 0 |
+| tree | 512 B | 38 | 1 | 13 | 24 | 0 |
+| rename | 512 B | 22 | 1 | 5 | 16 | 0 |
+| rename | 4096 B | 22 | 1 | 18 | 3 | 0 |
+| copy | 512 B | 21 | 1 | 6 | 14 | 0 |
+| copy | 4096 B | 21 | 1 | 17 | 3 | 0 |
+| tree | 4096 B | 50 | 1 | 43 | 6 | 0 |
+| delete | 512 B | 18 | 1 | 8 | 9 | 0 |
+| delete | 4096 B | 18 | 1 | 15 | 2 | 0 |
+| mkdir | 512 B | 10 | 1 | 4 | 5 | 0 |
+| mkdir | 4096 B | 10 | 1 | 6 | 3 | 0 |
+
+**358 casi, zero violazioni locali, 344 casi che richiedono Windows**:
+le 14 campagne restituiscono 77. Questo numero descrive lo stato locale,
+non un'affermazione che tutti i casi siano stati recuperati.
+
+Il laboratorio Windows ha verificato **89/89 casi PASS**, inclusi stati
+interrotti del diario v2, rinomine di cartelle in radice/annidate e campioni
+powercut a 512 B/4 KiB. Il verificatore usa soltanto copie private e conserva
+originali, log `chkdsk`, hash e VHD riparati. I campioni non coprono tutti i
+344 casi irrisolti delle campagne.
+
+Evidenze locali: `Build/evidence/recovery-assistance-20260929/`;
+Windows: `C:\OpenHDD-Lab\recovery-assistance-20260929-2146`. Il nome della
+cartella riflette l'avvio della campagna, non la data di completamento.
+Il giro di ritorno usa `verify-windows-roundtrip.py` su copie delle partizioni
+riparate; il suo `summary.json` distingue PASS, rifiuto senza scritture
+(INCONCLUSIVE) e violazione (FAIL). L'uscita 77 non chiude il gate.
+
+Esito Windows → Mac: **77 PASS, 12 INCONCLUSIVE, zero FAIL**. Tutti i 17
+casi funzionali (inclusi sostituzione, spostamento e le quattro rinomine
+di cartella interrotte) completano il recupero. Nei campioni powercut restano
+6 checksum non validi, 4 coppie di nomi mancanti e 2 cartelle genitrici
+mancanti. Il motore li rifiuta senza modificare un byte. Per tutti e 12,
+l'esportazione dei contenuti attesi supera gli hash; cinque casi contengono
+file spostati da Windows sotto `found.000`. È salvataggio in sola lettura,
+non completamento automatico del recupero.
+
+Il primo giro di collaudo chiedeva erroneamente di conservare il vecchio
+backup dopo una sostituzione già pubblicata (`v3-abort-replace-stage5`).
+L'aspettativa corretta richiede il nuovo hash al nome finale; il backup può
+essere eliminato dopo la verifica del diario. Il controllo è stato corretto
+senza cambiare il motore; primo esito e riesecuzione restano conservati in
+`mac-roundtrip/` e `mac-roundtrip-verified/`.
+
+Merge su main, pacchetto di rilascio e sostituzione dell'app installata
+restano sospesi: la recuperabilità automatica non è dimostrata per tutti i
+casi. La build candidata è in `Build/Custodrive.app`. Non eliminare i diari
+dei 12 rifiuti per far passare il gate.
+
+Restano separati i limiti del filesystem dal recupero applicativo, le prove
+hardware USB e il secondo Mac. Nessuna prova fisica svolta in questa campagna.
+
 ## Collaudo storico della scrittura
 
 Gli esiti del 28 settembre qui sotto sono registrazioni delle versioni
 precedenti, non una ricertificazione del branch `codex/recovery-hardening`.
-Per il nuovo diario e i nuovi percorsi di recupero restano da eseguire
-Windows/chkdsk, ripresa sul Mac e prove USB sacrificabili. Le simulazioni
-locali non chiudono questi gate; manca inoltre la prova su un secondo Mac.
+Per il nuovo diario valgono gli esiti del collaudo corrente sopra. Le prove
+USB sacrificabili e su un secondo Mac restano da ripetere; i risultati
+storici e le simulazioni locali non le sostituiscono.
 
 | Gate | Prova | Esito (28 settembre 2026) |
 |---|---|---|

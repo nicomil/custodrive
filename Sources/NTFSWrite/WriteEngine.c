@@ -54,6 +54,9 @@ static const char journal_name[] = ".OpenHDD-journal";
 
 /* Last low-level failure, for the diagnostic line of the caller. */
 static char last_error[256];
+static char recovery_error[8192];
+
+const char *oh_recovery_error(void) { return recovery_error; }
 
 static void note_error(const char *format, ...)
 {
@@ -1580,6 +1583,32 @@ typedef struct {
     int action; /* 0: already settled/undone, 1: drop first name, 2: restore it */
 } RecoveryEntry;
 
+/* Diagnostic only: paths are expectations, never a claim that data was found.
+   Escape control bytes so on-disk names cannot forge additional report lines. */
+static void recovery_path(char *out, size_t size, const char *folder, const char *name)
+{
+    snprintf(out, size, "/%s%s%s", folder, *folder ? "/" : "", name);
+    for (unsigned char *p = (unsigned char *)out; *p; ++p)
+        if (*p < 32 || *p == 127) *p = '?';
+}
+
+static int recovery_failure(int code, const char *reason, size_t row, const RecoveryEntry *entry)
+{
+    char first[2100] = "", second[2100] = "";
+    if (entry) {
+        recovery_path(first, sizeof(first), entry->folder[0], entry->name[0]);
+        recovery_path(second, sizeof(second), entry->folder[1], entry->name[1]);
+    }
+    snprintf(recovery_error, sizeof(recovery_error),
+             "Recovery reason: %s\nRecovery record: %zu\n"
+             "Expected path 1: %s\nExpected path 2: %s\n"
+             "Expected MFT 1: %016llx\nExpected MFT 2: %016llx\n",
+             reason, row, first, second,
+             (unsigned long long)(entry ? entry->reference[0] : 0),
+             (unsigned long long)(entry ? entry->reference[1] : 0));
+    return code;
+}
+
 static int recovery_directory(const char *path)
 {
     return oh_ntfs_valid_directory_path(path) && !protected_path(path);
@@ -1599,21 +1628,26 @@ static int parse_journal(char *text, RecoveryEntry *entries, size_t *count)
 {
     const char prefix[] = "OpenHDD-Journal\t2\t";
     int versioned = !strncmp(text, prefix, sizeof(prefix) - 1);
+    if (!versioned && !strncmp(text, "OpenHDD-Journal", 15))
+        return recovery_failure(ENOTSUP, "unsupported-version", 0, NULL);
     if (versioned) {
         char *body = strchr(text, '\n');
-        if (!body || body - text != (ptrdiff_t)(sizeof(prefix) - 1 + 64)) return EINVAL;
+        if (!body || body - text != (ptrdiff_t)(sizeof(prefix) - 1 + 64))
+            return recovery_failure(EINVAL, "invalid-header", 0, NULL);
         unsigned char digest[CC_SHA256_DIGEST_LENGTH];
         char hex[65];
         ++body;
         if (!CC_SHA256(body, (CC_LONG)strlen(body), digest)) return EIO;
         for (size_t i = 0; i < sizeof(digest); ++i)
             snprintf(hex + 2 * i, 3, "%02x", digest[i]);
-        if (memcmp(text + sizeof(prefix) - 1, hex, 64)) return EINVAL;
+        if (memcmp(text + sizeof(prefix) - 1, hex, 64))
+            return recovery_failure(EINVAL, "checksum-mismatch", 0, NULL);
         text = body;
     }
     char *line;
     while ((line = strsep(&text, "\n"))) {
         if (!*line) { if (text) return EINVAL; break; }
+        recovery_failure(EINVAL, "invalid-record", *count + 1, NULL);
         if (*count == MAX_ITEMS) return EFBIG;
         char *fields[7], *field;
         size_t n = 0;
@@ -1633,10 +1667,14 @@ static int parse_journal(char *text, RecoveryEntry *entries, size_t *count)
         entry->name[0] = fields[2];
         entry->folder[1] = type == 'L' ? fields[3] : fields[1];
         entry->name[1] = type == 'L' ? fields[4] : fields[3];
-        if (!recovery_directory(entry->folder[0]) || !recovery_directory(entry->folder[1]) ||
-            !oh_ntfs_valid_new_name(entry->name[1]) || (!*entry->folder[1] && protected_path(entry->name[1])) ||
-            (type == 'L' ? !oh_ntfs_valid_new_name(entry->name[0]) || (!*entry->folder[0] && protected_path(entry->name[0])) :
-             !temporary_name(entry->name[0], type == 'R' ? old_prefix : pending_prefix)))
+        int folders_valid = recovery_directory(entry->folder[0]) && recovery_directory(entry->folder[1]);
+        int final_valid = oh_ntfs_valid_new_name(entry->name[1]) &&
+            (*entry->folder[1] || !protected_path(entry->name[1]));
+        int first_valid = type == 'L' ?
+            oh_ntfs_valid_new_name(entry->name[0]) &&
+                (*entry->folder[0] || !protected_path(entry->name[0])) :
+            temporary_name(entry->name[0], type == 'R' ? old_prefix : pending_prefix);
+        if (!folders_valid || !final_valid || !first_valid)
             return EPERM;
         if (versioned) {
             if (recovery_reference(fields[type == 'L' ? 5 : 4], &entry->reference[0])) return EINVAL;
@@ -1649,6 +1687,7 @@ static int parse_journal(char *text, RecoveryEntry *entries, size_t *count)
             }
         }
     }
+    if (*count) recovery_error[0] = 0;
     return *count ? 0 : EINVAL;
 }
 
@@ -1656,6 +1695,7 @@ typedef struct {
     uint64_t folder;
     uint16_t *key;
     int length;
+    size_t row;
 } RecoveryName;
 
 static int compare_recovery_names(const void *a, const void *b)
@@ -1712,31 +1752,47 @@ static int plan_recovery(Target *target, RecoveryEntry *entries, size_t count,
         int present[2] = { 0 };
         for (size_t j = 0; j < 2 && !status; ++j) {
             RecoveryName *name = &names[2 * i + j];
+            name->row = i + 1;
             status = resolve_plain_directory(view, entry->folder[j], &name->folder);
             if (!status) status = oh_ntfs_name_key(view, entry->name[j], &name->key, &name->length);
-            if (status) break;
+            if (status) {
+                recovery_failure(status, "parent-unavailable", i + 1, entry);
+                break;
+            }
             status = oh_ntfs_lookup(view, name->folder, entry->name[j], &items[j]);
             if (status == ENOENT) { status = 0; continue; }
-            if (status) break;
+            if (status) {
+                recovery_failure(status, "entry-unreadable", i + 1, entry);
+                break;
+            }
             present[j] = 1;
-            if (items[j].special || items[j].inode < FILE_first_user || !items[j].hard_link_count ||
-                (entry->type == 'R' && items[j].kind != 1)) status = EPERM;
-            if (entry->reference[j] && items[j].reference != entry->reference[j] &&
-                !(entry->type == 'R' && j == 1 && items[j].reference == entry->reference[0]))
-                status = ESTALE;
+            int unsafe = items[j].special || items[j].inode < FILE_first_user ||
+                !items[j].hard_link_count || (entry->type == 'R' && items[j].kind != 1);
+            int restored_old = entry->type == 'R' && j == 1 &&
+                items[j].reference == entry->reference[0];
+            int stale = entry->reference[j] && items[j].reference != entry->reference[j] && !restored_old;
+            if (unsafe) status = recovery_failure(EPERM, "unsafe-entry", i + 1, entry);
+            else if (stale) status = recovery_failure(ESTALE, "identity-mismatch", i + 1, entry);
         }
         if (status) break;
-        if (!present[0] && !present[1]) { status = ENOENT; break; }
+        if (!present[0] && !present[1]) {
+            status = recovery_failure(ENOENT, "both-names-missing", i + 1, entry);
+            break;
+        }
         if (entry->digest && present[1] && items[1].reference == entry->reference[1]) {
             status = verify_recovered_file(view, &items[1], entry->digest);
-            if (status) break;
+            if (status) {
+                recovery_failure(status, "content-unverified", i + 1, entry);
+                break;
+            }
         }
         int same = present[0] && present[1] && items[0].reference == items[1].reference;
         if (present[0] && present[1]) {
             if (same) {
-                if (items[0].hard_link_count < 2 || items[1].hard_link_count < 2) status = EPERM;
+                if (items[0].hard_link_count < 2 || items[1].hard_link_count < 2)
+                    status = recovery_failure(EPERM, "link-count-invalid", i + 1, entry);
             } else if (entry->type != 'R' || !entry->reference[0]) {
-                status = EPERM; /* ambiguous legacy replacement or mismatched link */
+                status = recovery_failure(EPERM, "different-files", i + 1, entry);
             }
             entry->action = 1;
         } else if (present[0] && entry->type != 'L') {
@@ -1751,7 +1807,11 @@ static int plan_recovery(Target *target, RecoveryEntry *entries, size_t count,
     if (!status) {
         qsort(names, 2 * count, sizeof(*names), compare_recovery_names);
         for (size_t i = 1; i < 2 * count; ++i)
-            if (!compare_recovery_names(&names[i - 1], &names[i])) { status = EPERM; break; }
+            if (!compare_recovery_names(&names[i - 1], &names[i])) {
+                size_t row = names[i].row;
+                status = recovery_failure(EPERM, "overlapping-names", row, &entries[row - 1]);
+                break;
+            }
     }
     for (size_t i = 0; i < pending->count && !status; ++i)
         if (pending->entries[i].directory && !pending->entries[i].journaled) status = EPERM;
@@ -1778,33 +1838,62 @@ static int apply_journal(ntfs_volume *volume, const RecoveryEntry *entries, size
     return 0;
 }
 
+/* Shared read-only planning for diagnostics and actual recovery. */
+static int prepare_recovery(Target *target, PendingList *list, char **journal,
+                             RecoveryEntry **entries, size_t *entry_count)
+{
+    OHNTFSVolume *view = NULL;
+    uint32_t warnings = 0;
+    int status = readonly_open(target, &view, &warnings);
+    if (!status) {
+        status = warnings ? EBUSY : oh_ntfs_list(view, FILE_root, collect_pending, list);
+        oh_ntfs_close(view);
+    }
+    if (!status && target->io_failed) status = EIO;
+    if (!status && list->journal) {
+        status = read_journal(target, journal);
+        if (!status) {
+            *entries = calloc(MAX_ITEMS, sizeof(**entries));
+            status = *entries ? parse_journal(*journal, *entries, entry_count) : ENOMEM;
+        }
+    }
+    if (!status && (list->count || list->journal))
+        status = plan_recovery(target, *entries, *entry_count, list);
+    if (status) {
+        if (!*recovery_error)
+            recovery_failure(status, warnings ? "volume-needs-check" : "journal-or-temporary-unreadable", 0, NULL);
+        note_error("recovery journal or temporary entries are invalid or ambiguous; preserved without changes");
+    }
+    return status;
+}
+
+int oh_inspect_recovery(int fd, uint64_t size, int is_device)
+{
+    last_error[0] = recovery_error[0] = 0;
+    Target target = { .fd = fd, .size = size, .is_device = is_device,
+                      .align = device_alignment(fd) };
+    if (!target.align) return EIO;
+    PendingList list = { 0 };
+    char *journal = NULL;
+    RecoveryEntry *entries = NULL;
+    size_t count = 0;
+    int status = prepare_recovery(&target, &list, &journal, &entries, &count);
+    free(entries);
+    free(journal);
+    free(list.entries);
+    return status;
+}
+
 /* Only a clean volume can be recovered. Validate the entire journal and
    pending list before marking it dirty; keep all artifacts on ambiguity. */
 static int remove_pending(Target *target, size_t *removed, int *failure_stage)
 {
     PendingList list = { 0 };
-    OHNTFSVolume *view = NULL;
-    uint32_t warnings = 0;
     char *journal = NULL;
     RecoveryEntry *entries = NULL;
     size_t entry_count = 0;
-    int status = readonly_open(target, &view, &warnings);
-    if (status) return status;
-    status = warnings ? EBUSY : oh_ntfs_list(view, FILE_root, collect_pending, &list);
-    oh_ntfs_close(view);
-    if (!status && target->io_failed) status = EIO;
-    if (!status && list.journal) {
-        status = read_journal(target, &journal);
-        if (!status) {
-            entries = calloc(MAX_ITEMS, sizeof(*entries));
-            status = entries ? parse_journal(journal, entries, &entry_count) : ENOMEM;
-        }
-    }
-    if (!status && (list.count || list.journal)) status = plan_recovery(target, entries, entry_count, &list);
-    if (status) {
-        note_error("recovery journal or temporary entries are invalid or ambiguous; preserved without changes");
-        goto out;
-    }
+    int status = prepare_recovery(target, &list, &journal, &entries, &entry_count);
+    if (status) goto out;
     if (!list.count && !list.journal) goto out;
     if (failure_stage) *failure_stage = 2;
     if (set_volume_dirty(target, 1)) { status = phase_error(target); goto out; }
@@ -2026,7 +2115,7 @@ int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
                   uint32_t *safety_warnings, size_t *removed_pending)
 {
     if (!failure_stage || !safety_warnings || !failed_index) return EINVAL;
-    last_error[0] = 0;
+    last_error[0] = recovery_error[0] = 0;
     *failure_stage = 1;
     *failed_index = 0;
     *safety_warnings = 0;
@@ -2728,7 +2817,7 @@ int oh_edit_volume(int target_fd, uint64_t target_size, int is_device,
                    uint32_t *safety_warnings, size_t *removed_pending)
 {
     if (!failure_stage || !safety_warnings || !failed_index) return EINVAL;
-    last_error[0] = 0;
+    last_error[0] = recovery_error[0] = 0;
     *failure_stage = 1;
     *failed_index = 0;
     *safety_warnings = 0;
@@ -2976,6 +3065,7 @@ typedef struct {
     OHViewEntry callback;
     void *context;
     int root;
+    int include_recovery;
 } ViewListing;
 
 static char *nfc_copy(const char *value)
@@ -3001,7 +3091,7 @@ static char *nfc_copy(const char *value)
 static int view_entry(void *opaque, const char *name, const OHNTFSItem *item)
 {
     ViewListing *listing = opaque;
-    if (!strncmp(name, ".OpenHDD-", 9)) return 0;
+    if (!listing->include_recovery && !strncasecmp(name, ".OpenHDD-", 9)) return 0;
     if (listing->root && (name[0] == '$' || !strcmp(name, "System Volume Information")))
         return 0;
     char *normal = nfc_copy(name);
@@ -3014,7 +3104,8 @@ static int view_entry(void *opaque, const char *name, const OHNTFSItem *item)
     return status;
 }
 
-int oh_view_list(OHView *view, const char *path, OHViewEntry callback, void *context)
+int oh_view_list(OHView *view, const char *path, int include_recovery,
+                 OHViewEntry callback, void *context)
 {
     if (!view || !callback) return EINVAL;
     if (path && *path && !oh_ntfs_valid_directory_path(path)) return EINVAL;
@@ -3022,7 +3113,7 @@ int oh_view_list(OHView *view, const char *path, OHViewEntry callback, void *con
     int status = resolve_plain_directory(view->volume, path ? path : "", &inode);
     if (status) return status;
     ViewListing listing = { .callback = callback, .context = context,
-                            .root = inode == FILE_root };
+                            .root = inode == FILE_root, .include_recovery = include_recovery };
     status = oh_ntfs_list(view->volume, inode, view_entry, &listing);
     return view->target.io_failed ? EIO : status;
 }

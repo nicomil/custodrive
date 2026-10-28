@@ -8,7 +8,7 @@ build=${TMPDIR:-/tmp}/open-hdd-bridge-test
 if [ ! -x "$build/ntfsprogs/ntfscp" ]; then
   "$root/Tests/run-offline-write-probe.sh" >/dev/null
 fi
-python3 - "$root/Build/OpenHDDCopyTest" "$build/ntfsprogs" <<'PY'
+PYTHONPATH="$root/Tests" python3 - "$root/Build/OpenHDDCopyTest" "$build/ntfsprogs" <<'PY'
 import hashlib
 import os
 from pathlib import Path
@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from session_client import Session
 
 tool, progs = Path(sys.argv[1]), Path(sys.argv[2])
 def run(*args, code=0, env=None):
@@ -83,10 +84,12 @@ with tempfile.TemporaryDirectory(prefix='openhdd-recovery-') as directory:
             lines.append(b'\t'.join(fields[:5 if fields[0] == b'L' else 4]))
         put_journal(image, b'\n'.join(lines) + b'\n')
 
-    def refused_unchanged(image):
+    def refused_unchanged(image, reason=None):
         before = hash_file(image)
         result = copy(image, '--mkdir', '', 'After', code=1)
         assert b'stage 1' in result.stderr and b'invalid or ambiguous' in result.stderr, result.stderr
+        if reason:
+            assert ('Recovery reason: ' + reason).encode() in result.stderr, result.stderr
         assert hash_file(image) == before, 'refusal wrote to the image'
         assert read(image, '/keep.bin') == old.read_bytes()
 
@@ -99,11 +102,41 @@ with tempfile.TemporaryDirectory(prefix='openhdd-recovery-') as directory:
                b'L\t\t$MFT\t\tmissing.bin\n',
                b'L\t\tkeep.bin\t\tmissing.bin\nBAD\n',
                b'L\t\tkeep.bin\t\tmissing.bin\n\0ignored',
-               b'L\t\tkeep.bin\t\tmissing.bin', b'']
+               b'L\t\tkeep.bin\t\tmissing.bin', b'', b'OpenHDD-Journal\t99\tunknown\n']
     for i, data in enumerate(invalid):
         image = fresh('invalid-' + str(i))
         put_journal(image, data)
-        refused_unchanged(image)
+        refused_unchanged(image, 'unsupported-version' if data.startswith(b'OpenHDD-Journal\t99') else None)
+
+    # Read-only assistance: detailed reasons, visible temporaries, export and
+    # repeated checks must leave every byte unchanged and keep writes blocked.
+    image = fresh('assisted-recovery')
+    put_journal(image, b'L\tParent\tmissing-old.bin\tParent\tmissing-new.bin\n')
+    before = hash_file(image)
+    session = Session([str(tool), '--image', str(image), '--session'])
+    for _ in range(2):
+        reply = session.call('inspect-recovery')
+        assert reply[0] == 'error' and 'both-names-missing' in reply[-1], reply
+        assert 'Recovery record: 1' in reply[-1] and '/Parent/missing-old.bin' in reply[-1], reply
+        assert '.OpenHDD-journal' in session.listing()
+        assert session.call('mkdir', '', '', 'MustNotExist')[0] == 'error'
+    saved = work / 'salvaged.bin'
+    assert session.call('export', 'keep.bin', str(saved))[0] == 'ok'
+    assert saved.read_bytes() == old.read_bytes()
+    assert session.call('export', 'keep.bin', str(saved))[0] == 'error'
+    assert session.end()[1] == 0
+    assert hash_file(image) == before
+    # Valid recovery plans can be inspected repeatedly without applying them.
+    image = fresh('inspect-valid')
+    copy(image, '--rename', 'keep.bin', 'renamed.bin', code=86,
+         env={'OPENHDD_TEST_ABORT_WITH_TWO_NAMES': '1'})
+    repair(image)
+    before = hash_file(image)
+    session = Session([str(tool), '--image', str(image), '--session'])
+    assert session.call('inspect-recovery')[0] == 'ok'
+    assert session.end()[1] == 0 and hash_file(image) == before
+    copy(image, '--mkdir', '', 'After')
+    clean(image)
 
     # A valid actionable first row must not run when a later row is invalid.
     for mode in ('bad-tail', 'duplicate', 'checksum', 'sequence'):
@@ -122,7 +155,8 @@ with tempfile.TemporaryDirectory(prefix='openhdd-recovery-') as directory:
             fields = data.rstrip(b'\n').split(b'\t')
             fields[-1] = ('%016x' % (int(fields[-1], 16) + (1 << 48))).encode()
             put_journal(image, versioned(b'\t'.join(fields) + b'\n'))
-        refused_unchanged(image)
+        refused_unchanged(image, {'bad-tail': 'invalid-record', 'duplicate': 'overlapping-names',
+                                 'checksum': 'checksum-mismatch', 'sequence': 'identity-mismatch'}[mode])
         assert read(image, '/renamed.bin') == old.read_bytes()
 
     # Directory case renames, in root and nested; two names and temporary-only.
