@@ -1,0 +1,31 @@
+Custodrive — copie verificate sui dischi esterni
+Lingue: English (predefinita), Italiano, Español.
+Altre guide di installazione: Install.en.txt, Install.es.txt.
+Requisiti: Mac con chip Apple (M1 o successivi), macOS 15.4 o successivo.
+
+INSTALLAZIONE
+1. Trascina «Custodrive» sulla cartella «Applications» (Applicazioni).
+2. Apri Custodrive dalla cartella Applicazioni.
+
+PRIMA APERTURA SU UN ALTRO MAC
+Custodrive non è firmato con un certificato Apple Developer, quindi macOS
+la blocca la prima volta («non è possibile verificare lo sviluppatore»).
+Per aprirla:
+  a. Prova ad aprirla una volta e chiudi l’avviso.
+  b. Impostazioni di Sistema → Privacy e sicurezza → in fondo, accanto a
+     «Custodrive è stata bloccata», premi «Apri comunque» e conferma con la
+     password.
+Oppure, dal Terminale:
+  xattr -dr com.apple.quarantine /Applications/Custodrive.app
+Serve solo la prima volta.
+
+USO
+Collega un disco NTFS e selezionalo a sinistra. Trascina file dal Finder
+nella finestra per copiarli; la prima modifica chiede la password una sola
+volta. Premi «Termina modifiche» o «Espelli» prima di scollegare il disco.
+Le copie vengono rilette e verificate, ma un’interruzione può comunque
+danneggiare il filesystem. Conserva una copia dei dati importanti.
+
+LINGUA
+Scegli English, Italiano o Español nel menu Lingua della barra (icona del
+globo), oppure in Custodrive → Impostazioni. Riavvia per applicare la scelta.

@@ -1,0 +1,31 @@
+Custodrive — verified copies for external disks
+Languages: English (default), Italiano, Español.
+Other installation guides: Install.it.txt, Install.es.txt.
+Requirements: Apple Silicon Mac (M1 or later), macOS 15.4 or later.
+
+INSTALLATION
+1. Drag “Custodrive” to “Applications”.
+2. Open Custodrive from Applications.
+
+FIRST OPENING ON ANOTHER MAC
+Custodrive is not signed with an Apple Developer certificate, so macOS
+blocks it the first time (“the developer cannot be verified”).
+To open it:
+  a. Try opening it once and dismiss the alert.
+  b. System Settings → Privacy & Security → at the bottom, next to
+     “Custodrive was blocked”, click “Open Anyway” and confirm with your
+     password.
+Or, in Terminal:
+  xattr -dr com.apple.quarantine /Applications/Custodrive.app
+This is only needed the first time.
+
+USE
+Connect an NTFS disk and select it on the left. Drag files from Finder
+into the window to copy them; the first change asks for your password
+once. Click “Finish Editing” or “Eject” before disconnecting the disk.
+Copies are read back and verified, but an interruption can still cause
+filesystem damage. Keep a backup of important data.
+
+LANGUAGE
+Choose English, Italiano or Español from the toolbar’s Language menu
+(globe icon), or Custodrive → Settings. Restart to apply the choice.

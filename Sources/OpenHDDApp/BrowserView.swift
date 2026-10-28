@@ -11,7 +11,7 @@ struct LocalBrowserView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $store.selected) {
-                Section("Dischi esterni") {
+                Section(L("External Disks")) {
                     ForEach(store.records, id: \.bsdName) { disk in
                         VStack(alignment: .leading, spacing: 2) {
                             Label(disk.name, systemImage: disk.isNTFS ? "externaldrive.fill" : "externaldrive")
@@ -32,6 +32,36 @@ struct LocalBrowserView: View {
                 }
                 pathBar
                 Divider()
+                if let issue = model.recoveryIssue {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(L("Recovery paused — writes blocked"), systemImage: "exclamationmark.triangle")
+                            .font(.headline)
+                        ScrollView {
+                            Text(issue.explanation).font(.callout).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(height: 110)
+                        Text(L("Save readable files on another disk. Do not delete the journal or temporary files."))
+                            .font(.callout)
+                            .lineLimit(2)
+                        HStack {
+                            Button(L("Save Report…")) { model.saveRecoveryReport() }
+                            Button(L("Save Selected File…")) { model.exportSelection() }
+                                .disabled(!model.canExportSelection)
+                        }
+                        HStack {
+                            Button(L("Open in Finder")) { model.openRecoveryInFinder() }
+                                .disabled(model.sessionChanging || model.preparing != nil || model.running != nil)
+                            Button(L("Check Again")) { model.recheckRecovery() }
+                                .disabled(model.sessionChanging || model.preparing != nil || model.running != nil)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.1))
+                    Divider()
+                }
                 ZStack {
                     BrowserTable(model: model)
                     if let placeholder = model.placeholder {
@@ -40,8 +70,8 @@ struct LocalBrowserView: View {
                             if model.isNTFS && model.record?.mountURL == nil && !model.editingHere &&
                                 !model.sessionChanging {
                                 HStack {
-                                    Button("Apri") { model.mountReadOnly() }
-                                    Button("Modifica") { model.beginEditing() }
+                                    Button(L("Open")) { model.mountReadOnly() }
+                                    Button(L("Edit")) { model.beginEditing() }.disabled(!model.canWrite)
                                 }
                             }
                         }
@@ -65,15 +95,15 @@ struct LocalBrowserView: View {
 
     private func incomingBar(_ request: BrowserModel.IncomingRequest) -> some View {
         let what = request.urls.count == 1 ? "«\(request.urls[0].lastPathComponent)»" :
-            "\(request.urls.count) elementi"
-        let target = request.folder.isEmpty ? "nella cartella principale" : "in «\(request.folder)»"
+            L("\(request.urls.count) items")
+        let target = request.folder.isEmpty ? L("in the root folder") : L("in “\(request.folder)”")
         return HStack(spacing: 10) {
             Image(systemName: "square.and.arrow.down.on.square").foregroundStyle(.tint)
-            Text("Copiare \(what) su «\(request.volume)» \(target)?").font(.callout)
+            Text(L("Copy \(what) to “\(request.volume)” \(target)?")).font(.callout)
                 .lineLimit(2)
             Spacer()
-            Button("Annulla") { model.cancelIncoming() }
-            Button("Copia") { model.confirmIncoming() }
+            Button(L("Cancel")) { model.cancelIncoming() }
+            Button(L("Copy")) { model.confirmIncoming() }
                 .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 12)
@@ -97,10 +127,10 @@ struct LocalBrowserView: View {
             }
             Spacer()
             if model.editingHere {
-                Label("Modifica attiva", systemImage: "pencil.circle.fill")
+                Label(model.recoveryIssue == nil ? L("Editing active") : L("Recovery browsing"), systemImage: "pencil.circle.fill")
                     .foregroundStyle(.orange).font(.caption)
             } else if model.isNTFS {
-                Label("Sola lettura", systemImage: "lock.fill")
+                Label(L("Read-only"), systemImage: "lock.fill")
                     .foregroundStyle(.secondary).font(.caption)
             }
         }
@@ -113,29 +143,30 @@ struct LocalBrowserView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
             Button { model.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!model.canGoBack).help("Indietro")
+                .disabled(!model.canGoBack).help(L("Back"))
             Button { model.goForward() } label: { Image(systemName: "chevron.right") }
-                .disabled(!model.canGoForward).help("Avanti")
+                .disabled(!model.canGoForward).help(L("Forward"))
             Button { model.goUp() } label: { Image(systemName: "arrow.up") }
-                .disabled(!model.canGoUp).help("Cartella superiore (⌘↑)")
+                .disabled(!model.canGoUp).help(L("Enclosing Folder (⌘↑)"))
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarLanguageMenu()
             Button { model.newFolder() } label: { Image(systemName: "folder.badge.plus") }
-                .disabled(!model.canWrite).help("Nuova cartella (⇧⌘N)")
+                .disabled(!model.canWrite).help(L("New Folder (⇧⌘N)"))
             Button { model.chooseAndCopy() } label: { Image(systemName: "square.and.arrow.down.on.square") }
-                .disabled(!model.canWrite).help("Copia qui file dal Mac…")
+                .disabled(!model.canWrite).help(L("Copy Files Here from Mac…"))
             if model.editingHere {
-                Button("Termina modifiche") { model.endEditing() }
-                    .disabled(model.sessionChanging || model.running != nil)
-                    .help("Il disco torna in sola lettura e visibile nel Finder")
+                Button(L("Finish Editing")) { model.endEditing() }
+                    .disabled(model.sessionChanging || model.running != nil || model.preparing != nil)
+                    .help(L("The disk becomes read-only again and visible in Finder"))
             } else {
-                Button("Modifica") { model.beginEditing() }
-                    .disabled(!model.isNTFS || model.sessionChanging)
-                    .help("Una sola password: il disco resta riservato a Custodrive finché non termini")
+                Button(L("Edit")) { model.beginEditing() }
+                    .disabled(!model.canWrite)
+                    .help(L("One password: the disk stays reserved for Custodrive until you finish editing"))
             }
             Button { model.eject() } label: { Image(systemName: "eject") }
-                .disabled(model.record == nil || model.running != nil || model.sessionChanging)
-                .help("Espelli")
+                .disabled(model.record == nil || model.running != nil || model.sessionChanging || model.preparing != nil)
+                .help(L("Eject"))
         }
     }
 
@@ -146,7 +177,7 @@ struct LocalBrowserView: View {
                     ProgressView().controlSize(.small)
                     Text(preparing).font(.callout)
                     Spacer()
-                    Button("Annulla") { model.cancel() }
+                    if !model.sessionChanging { Button(L("Cancel")) { model.cancel() } }
                 }
             }
             if let running = model.running, let progress = model.progress {
@@ -154,12 +185,12 @@ struct LocalBrowserView: View {
                     HStack {
                         Text(running.title).font(.callout.bold())
                         if !model.queue.isEmpty {
-                            Text("· altre \(model.queue.count) in coda").font(.callout).foregroundStyle(.secondary)
+                            Text(L("· \(model.queue.count) more queued")).font(.callout).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Text("\(Int(progress * 100)) %").font(.callout.monospacedDigit())
                         if model.canCancel || !model.queue.isEmpty {
-                            Button("Annulla") { model.cancel() }
+                            Button(L("Cancel")) { model.cancel() }
                         }
                     }
                     ProgressView(value: progress)
@@ -182,10 +213,30 @@ struct LocalBrowserView: View {
     }
 
     private var summary: String {
-        guard model.record != nil else { return "Collega un disco NTFS e selezionalo." }
+        guard model.record != nil else { return L("Connect an NTFS disk and select it.") }
         let folders = model.entries.filter(\.isFolder).count
-        return counted(model.entries.count, "elemento", "elementi") + " (" +
-            counted(folders, "cartella", "cartelle") + "). Trascina qui file dal Finder per copiarli."
+        return counted(model.entries.count, L("item"), L("items")) + " (" +
+            counted(folders, L("folder"), L("folders")) + L("). Drag files here from Finder to copy them.")
+    }
+}
+
+private struct ToolbarLanguageMenu: View {
+    @AppStorage(AppLanguage.preferenceKey) private var selected: AppLanguage = .english
+
+    var body: some View {
+        Menu {
+            Picker(L("Language"), selection: $selected) {
+                ForEach(AppLanguage.allCases) { language in
+                    Text(language.name).tag(language)
+                }
+            }
+            if selected != .current {
+                Text(L("Restart Custodrive to apply the selected language."))
+            }
+        } label: {
+            Label(L("Language"), systemImage: "globe")
+        }
+        .help(L("The language takes effect the next time the app starts."))
     }
 }
 #endif

@@ -1,240 +1,262 @@
 <p align="center">
-  <img src="docs/images/icon.png" width="128" alt="Icona di Custodrive">
+  <img src="docs/images/icon.png" width="128" alt="Custodrive icon">
 </p>
 
 <h1 align="center">Custodrive</h1>
 
 <p align="center">
-  <b>Copie verificate sui tuoi dischi esterni.</b><br>
-  Leggi e scrivi su dischi e chiavette Windows (NTFS) dal Mac, con ogni
-  operazione verificata.
+  <b>Verified copies on your external disks.</b><br>
+  Read and write Windows (NTFS) disks and USB drives on your Mac,
+  with every operation verified.
 </p>
 
 <p align="center">
-  Mac Apple Silicon · macOS 15.4 o successivo · gratuita, senza driver né abbonamenti
+  Apple Silicon Mac · macOS 15.4 or later · free, no drivers or subscriptions
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.it.md">Italiano</a> · <a href="README.es.md">Español</a>
 </p>
 
 ---
 
-macOS legge i dischi NTFS ma non ci scrive. Custodrive ti permette di
-copiare foto e video, creare cartelle, rinominare, spostare ed eliminare su
-dischi formattati da Windows, con un'interfaccia simile al Finder. Le copie
-vengono rilette e verificate. Un'interruzione può comunque danneggiare il
-filesystem: il segnale «da controllare» e il diario aiutano il recupero,
-ma non garantiscono l'assenza di perdite. Conserva una copia dei dati importanti.
+macOS reads NTFS disks but cannot write to them. Custodrive lets you copy
+photos and videos, create folders, rename, move and delete items on
+Windows-formatted disks, through a Finder-like interface. Copies are read
+back and verified. An interruption can still damage the filesystem: the
+“needs checking” flag and recovery journal help recovery, but do not guarantee
+there will be no data loss. Keep a backup of important data.
+
+The interface supports **English (default), Italian and Spanish**. Use the
+**Language** menu (globe icon) in the toolbar, or **Custodrive → Settings…**,
+then restart the app to apply your choice. Existing edit sessions and copies
+continue normally. Screenshots below show the Italian interface.
 
 <p align="center">
-  <img src="docs/images/01-browser.png" width="780" alt="Custodrive: dischi a sinistra, contenuto del disco a destra">
+  <img src="docs/images/01-browser.png" width="780" alt="Custodrive: disks on the left, disk contents on the right">
 </p>
 
-## Indice
+## Contents
 
-- [Primi passi](#primi-passi)
-- [Funzioni](#funzioni)
-- [Come ti protegge](#come-ti-protegge)
-- [Scorciatoie](#scorciatoie)
-- [Problemi comuni](#problemi-comuni)
-- [Requisiti e limiti](#requisiti-e-limiti)
-- [In arrivo](#in-arrivo)
-- [Per sviluppatori](#per-sviluppatori)
+- [Getting started](#getting-started)
+- [Features](#features)
+- [How it protects your data](#how-it-protects-your-data)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Troubleshooting](#troubleshooting)
+- [Requirements and limitations](#requirements-and-limitations)
+- [Planned features](#planned-features)
+- [For developers](#for-developers)
 
-## Primi passi
+## Getting started
 
-### 1. Installa
+### 1. Install
 
-1. Apri `Custodrive-1.0.0.dmg` e trascina **Custodrive** sulla cartella
-   **Applicazioni**.
-2. Apri Custodrive dalla cartella Applicazioni.
+1. Open `Custodrive-1.0.0.dmg` and drag **Custodrive** to **Applications**.
+2. Open Custodrive from Applications.
 
-**La prima volta su un nuovo Mac** macOS la blocca con «non è possibile
-verificare lo sviluppatore»: Custodrive non è distribuita con un certificato
-Apple Developer. Chiudi l'avviso, poi vai in **Impostazioni di Sistema →
-Privacy e sicurezza** e, in fondo alla pagina, premi **Apri comunque**
-accanto a «Custodrive». In alternativa, dal Terminale:
+**The first time on a new Mac**, macOS blocks it with “the developer cannot
+be verified”: Custodrive is not distributed with an Apple Developer
+certificate. Dismiss the alert, then go to **System Settings → Privacy &
+Security** and click **Open Anyway** next to “Custodrive” at the bottom of
+the page. Alternatively, in Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Custodrive.app
 ```
 
-Serve una sola volta per Mac.
+You only need to do this once per Mac.
 
-### 2. Collega un disco e sfoglialo
+### 2. Connect a disk and browse
 
-Collega un disco o una chiavetta NTFS: compare a sinistra, sotto **Dischi
-esterni**. Selezionalo e sfoglia le cartelle come nel Finder. Finché non
-modifichi niente, il disco resta montato in sola lettura ed è visibile
-anche nel Finder.
-
-<p align="center">
-  <img src="docs/images/02-folder.png" width="780" alt="Una cartella di foto aperta in Custodrive">
-</p>
-
-### 3. Copia e modifica
-
-Trascina file o cartelle dal Finder nella finestra, oppure sopra una
-cartella. Alla prima modifica macOS chiede la **password di amministratore
-una sola volta**. Da quel momento il disco è in **modifica attiva**:
-riservato a Custodrive, con ogni operazione immediata.
+Connect an NTFS disk or USB drive: it appears on the left under **External
+Disks**. Select it and browse folders as in Finder. Until you make a change,
+the disk remains mounted read-only and is also visible in Finder.
 
 <p align="center">
-  <img src="docs/images/03-edit-session.png" width="780" alt="Modifica attiva: il disco è riservato a Custodrive">
+  <img src="docs/images/02-folder.png" width="780" alt="A photo folder open in Custodrive">
 </p>
 
-### 4. Termina ed espelli
+### 3. Copy and edit
 
-Quando hai finito premi **Termina modifiche**: il disco torna in sola
-lettura e visibile nel Finder. Poi usa **Espelli** prima di scollegarlo.
-Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
-
-## Funzioni
-
-### Sfogliare
-- **Barra laterale** con tutti i dischi esterni e il loro stato (sola
-  lettura, modifica attiva, verifica necessaria).
-- **Elenco a colonne** (nome, dimensione, data), ordinabile con un clic
-  sull'intestazione; le cartelle stanno sempre in cima.
-- **Percorso cliccabile**, pulsanti Indietro, Avanti e Cartella superiore.
-- **Doppio clic** per aprire una cartella o un file.
-- **Quick Look** con la barra spaziatrice, come nel Finder.
-- Durante **modifica attiva**, aprire un file chiede dove salvare una copia
-  sul Mac. Le modifiche nell'editor restano lì: per riportarle sul disco NTFS
-  occorre copiarle con Custodrive. Le anteprime Quick Look sono temporanee
-  e in sola lettura.
-
-### Copiare dal Mac
-- Trascina file e **cartelle intere** dal Finder: tutte le sottocartelle
-  vengono ricreate. I file di servizio del Mac (`.DS_Store`, `._*`) vengono
-  saltati; i link simbolici non vengono seguiti.
-- Oppure usa il pulsante **Copia qui file dal Mac…**, il tasto destro sui
-  file nel Finder → **Servizi → Copia su disco NTFS con Custodrive**, o
-  trascina i file sull'**icona di Custodrive nel Dock**. I file finiscono
-  nella cartella aperta nell'app.
-- Ogni file viene **riletto dal disco e confrontato** (SHA-256) con
-  l'originale prima di comparire con il suo nome.
-- **File già presenti**: Custodrive chiede se **sostituirli** o
-  **saltarli**. Il vecchio file resta finché il nuovo non è stato verificato.
-- Le **copie grandi** avanzano a lotti (1000 file o 8 GB alla volta), con
-  una sola barra, la velocità e il tempo rimanente.
+Drag files or folders from Finder into the window, or onto a folder.
+On the first change, macOS asks for the **administrator password once**.
+The disk then shows **Editing active**: it is reserved for Custodrive,
+and each operation takes effect immediately.
 
 <p align="center">
-  <img src="docs/images/04-copy-progress.png" width="780" alt="Copia in corso con barra di avanzamento, tempo rimanente e pulsante Annulla">
+  <img src="docs/images/03-edit-session.png" width="780" alt="Editing active: the disk is reserved for Custodrive">
 </p>
 
-### Organizzare
-- **Nuova cartella** (⇧⌘N): viene creata e il nome è subito pronto da
-  scrivere.
-- **Rinomina**: seleziona e premi Invio, poi scrivi direttamente
-  nell'elenco. Puoi cambiare anche solo maiuscole e minuscole.
-- **Sposta**: trascina elementi sopra una cartella, oppure ⌘X e poi ⌘V
-  nella cartella di destinazione. È immediato, i dati non vengono ricopiati.
-- **Elimina** (⌘⌫): file e cartelle con tutto il contenuto. Su NTFS non c'è
-  un Cestino, quindi Custodrive chiede sempre conferma.
-- **Menu contestuale** con il tasto destro, con tutte le azioni.
+### 4. Finish and eject
+
+When you are done, click **Finish Editing**: the disk becomes read-only again
+and visible in Finder. Then use **Eject** before disconnecting it. Ejecting,
+or quitting the app, also finishes the edit session automatically.
+
+## Features
+
+### Browse
+
+- **Sidebar** with all external disks and their status (read-only, editing
+  active, check required).
+- **Column list** (name, size, date), sortable by clicking a header; folders
+  always appear first.
+- **Clickable path**, Back, Forward and Enclosing Folder buttons.
+- **Double-click** to open a folder or file.
+- **Quick Look** with the space bar, as in Finder.
+- While **editing is active**, opening a file asks where to save a copy on
+  your Mac. Changes in your editor stay there: to put them back on the NTFS
+  disk, copy them with Custodrive. Quick Look previews are temporary and
+  read-only.
+
+### Copy from your Mac
+
+- Drag files and **entire folders** from Finder: all subfolders are
+  recreated. Mac service files (`.DS_Store`, `._*`) are skipped; symbolic
+  links are not followed.
+- Or use **Copy Files Here from Mac…**, right-click files in Finder →
+  **Services → Copy to NTFS Disk with Custodrive**, or drag files onto the
+  **Custodrive icon in the Dock**. Files go into the folder open in the app.
+  Finder’s Services label follows the system language.
+- Each file is **read back from the disk and compared** (SHA-256) with the
+  original before it appears under its final name.
+- **Existing files**: Custodrive asks whether to **Replace** or **Skip These**.
+  The old file stays until the new one has been verified.
+- **Large copies** run in batches (1000 files or 8 GB at a time), with one
+  progress bar, transfer speed and time remaining.
 
 <p align="center">
-  <img src="docs/images/05-delete-confirm.png" width="260" alt="Conferma di eliminazione">
+  <img src="docs/images/04-copy-progress.png" width="780" alt="Copy progress bar, remaining time and Cancel button">
 </p>
 
-### Coda e annullamento
-- Quello che trascini mentre una copia è in corso si mette **in coda**
-  sotto la stessa barra.
-- **Annulla** richiede l'arresto della copia:
-  - se il ripristino riesce, il lotto in corso viene tolto e il disco resta pulito;
-  - i lotti già completati restano sul disco, verificati;
-  - la coda viene svuotata.
+### Organize
 
-## Come ti protegge
+- **New Folder** (⇧⌘N): creates a folder with its name ready to edit.
+- **Rename**: select an item, press Return and type directly in the list.
+  Changes to letter case alone are supported.
+- **Move**: drag items onto a folder, or press ⌘X and then ⌘V in the
+  destination folder. Moves are immediate; data is not copied again.
+- **Delete** (⌘⌫): files and folders with all their contents. NTFS has no
+  Trash, so Custodrive always asks for confirmation.
+- **Context menu** with all actions available by right-clicking.
 
-Custodrive applica queste misure per rilevare errori e limitare i danni:
+<p align="center">
+  <img src="docs/images/05-delete-confirm.png" width="260" alt="Deletion confirmation">
+</p>
 
-1. **Il disco viene segnato «da controllare»** (dirty bit di NTFS) prima di
-   ogni modifica. Il segno viene tolto solo quando l'operazione è finita e
-   verificata. Dopo un'interruzione, il segno richiede un controllo su
-   Windows; l'esito di `chkdsk` dipende dai danni presenti.
-2. **Niente viene sovrascritto sul posto.** I file nuovi vengono scritti a
-   parte e riletti; solo dopo prendono il loro nome. Una sostituzione tiene
-   da parte il vecchio file finché il nuovo non è al suo posto.
-3. **Un diario di recupero** registra sostituzioni, spostamenti e rinomine.
-   Dopo il controllo del filesystem, Custodrive verifica il diario prima
-   di completare o annullare l'operazione. Se nomi, identità o contenuti
-   risultano ambigui, rifiuta il recupero conservando quanto trova.
-4. **Dischi a rischio rifiutati.** Custodrive non scrive su dischi con
-   Windows in ibernazione o Avvio rapido, con il journal non chiuso o già da
-   controllare, e spiega il motivo.
-5. **File di sistema protetti.** `$MFT`, `System Volume Information`,
-   junction, link simbolici e file cifrati non vengono mai toccati né
-   seguiti.
+### Queue and cancellation
 
-I test automatici includono errori I/O e interruzioni simulate. I casi
-illeggibili o da riparare restano **inconclusivi** finché non verificati su
-Windows. Le prove storiche su Windows e USB riguardano versioni precedenti:
-non certificano automaticamente il motore attuale. Stato e limiti in
-[docs/sviluppo.md](docs/sviluppo.md).
+- Items dragged in while a copy is running are **queued** under the same bar.
+- **Cancel** requests that the copy stop:
+  - if rollback succeeds, the current batch is removed and the disk stays clean;
+  - completed batches remain on the disk, verified;
+  - the queue is cleared.
 
-## Scorciatoie
+## How it protects your data
 
-| Azione | Tasti |
+Custodrive uses these measures to detect errors and limit damage:
+
+1. **The disk is marked “needs checking”** (NTFS dirty bit) before every
+   change. The mark is cleared only when the operation is complete and
+   verified. After an interruption, the mark calls for a Windows check;
+   the result of `chkdsk` depends on the damage present.
+2. **Nothing is overwritten in place.** New files are written separately
+   and read back; only then do they receive their final names. A replacement
+   keeps the old file aside until the new one is in place.
+3. **A recovery journal** records replacements, moves and renames. After
+   the filesystem check, Custodrive verifies the journal before completing
+   or undoing the operation. If names, identities or contents are ambiguous,
+   it refuses recovery and preserves what it finds.
+4. **Unsafe disks are refused.** Custodrive does not write to disks with
+   Windows hibernation or Fast Startup, an unclosed journal or an existing
+   “needs checking” mark, and explains why.
+5. **System files are protected.** `$MFT`, `System Volume Information`,
+   junctions, symbolic links and encrypted files are never modified or
+   followed.
+
+Automated tests include I/O errors and simulated interruptions. Unreadable
+cases or cases needing repair remain **inconclusive** until verified on
+Windows. Historical Windows and USB tests concern earlier versions: they do
+not automatically certify the current engine. Status and limitations:
+[development notes (Italian)](docs/sviluppo.md).
+
+## Keyboard shortcuts
+
+| Action | Keys |
 |---|---|
-| Apri cartella o file | doppio clic, ⌘↓ |
-| Cartella superiore | ⌘↑ |
-| Indietro / Avanti | ⌘[ / ⌘] |
-| Quick Look | Spazio |
-| Rinomina | Invio |
-| Nuova cartella | ⇧⌘N |
-| Copia qui file dal Mac | ⇧⌘O |
-| Taglia (per spostare) / Incolla | ⌘X / ⌘V |
-| Elimina | ⌘⌫ |
+| Open folder or file | double-click, ⌘↓ |
+| Enclosing folder | ⌘↑ |
+| Back / Forward | ⌘[ / ⌘] |
+| Quick Look | Space |
+| Rename | Return |
+| New folder | ⇧⌘N |
+| Copy files here from Mac | ⇧⌘O |
+| Cut (to move) / Paste | ⌘X / ⌘V |
+| Delete | ⌘⌫ |
 
-## Problemi comuni
+## Troubleshooting
 
-**«Windows non ha chiuso correttamente il disco (journal NTFS aperto)».**
-Il disco è stato staccato da Windows senza rimozione sicura. Ricollegalo a
-Windows, usa **Rimozione sicura dell'hardware**, poi riprova sul Mac.
+**“Windows did not close the disk properly (NTFS journal open).”**
+The disk was disconnected from Windows without safe removal. Reconnect it
+to Windows, use **Safely Remove Hardware**, then try again on your Mac.
 
-**«Windows è in ibernazione o con Avvio rapido attivo».** Spegni Windows
-completamente (non solo sospensione), oppure disattiva l'Avvio rapido.
+**“Windows is hibernating or Fast Startup is enabled.”** Shut Windows down
+completely (not just sleep), or disable Fast Startup.
 
-**«Il disco va controllato su Windows».** Un'operazione è stata
-interrotta. Prima conserva una copia dei dati ancora accessibili. Su una
-copia sacrificabile, o dopo aver salvato i dati, apri il Prompt dei comandi
-Windows come amministratore ed esegui `chkdsk X: /f`, dove X è la lettera
-del disco. `chkdsk` modifica il filesystem e non garantisce il recupero.
-**Se Windows propone di formattare il disco, rifiuta.** Custodrive può
-riprendere solo quando il volume supera i controlli; un diario ambiguo
-richiede verifica manuale. Non cancellare i file `.OpenHDD-*` per forzarla.
+**“The disk needs checking on Windows.”** An operation was interrupted.
+First save a copy of any data still accessible. On a disposable copy, or
+after saving your data, open Windows Command Prompt as administrator and
+run `chkdsk X: /f`, where X is the drive letter. `chkdsk` changes the
+filesystem and does not guarantee recovery. **If Windows offers to format
+the disk, decline.** Custodrive can resume only when the volume passes its
+checks; an ambiguous journal needs manual investigation. Do not delete
+`.OpenHDD-*` files to force it to resume.
 
-**Non vedo il disco nel Finder.** Durante la modifica attiva il disco è
-riservato a Custodrive: premi **Termina modifiche**.
+**“Recovery paused — writes blocked.”** The app shows the reason, journal
+entry and expected paths; it does not claim to have found files moved by
+Windows. You can browse temporary files too, **Save Selected File** to
+another disk, or **Open in Finder** read-only to copy folders. **Save
+Report** keeps diagnostics, including private names. **Check Again**
+revalidates the volume without writing: edits become available only if
+all checks pass. If ambiguity remains, keep the original and journal and
+seek assistance; there is no forced unlock.
 
-## Requisiti e limiti
+**I cannot see the disk in Finder.** While editing is active, the disk is
+reserved for Custodrive: click **Finish Editing**.
 
-- Mac con chip Apple (M1 o successivi), macOS 15.4 o successivo.
-- Dischi e chiavette **NTFS** esterni. Per APFS, exFAT e FAT usa il Finder.
-- La scrittura avviene dentro Custodrive, non direttamente dal Finder: il
-  Finder vede il disco in sola lettura.
-- Non si modificano file «sul posto» (per esempio aprire un documento sul
-  disco e salvarlo): si copia, si sostituisce, si sposta.
-- File NTFS compressi o cifrati non vengono scritti.
+## Requirements and limitations
 
-## In arrivo
+- Apple Silicon Mac (M1 or later), macOS 15.4 or later.
+- External **NTFS** disks and USB drives. Use Finder for APFS, exFAT and FAT.
+- Writes happen inside Custodrive, rather than directly in Finder: Finder
+  sees the disk read-only.
+- Files cannot be edited in place (for example, opening a document on the
+  disk and saving it there): copy, replace or move them instead.
+- Compressed or encrypted NTFS files are not written.
 
-Custodrive vuole diventare il custode dei tuoi dischi, non solo un ponte
-verso NTFS. Prossime funzioni previste:
+## Planned features
 
-- **Clonazione** di dischi e chiavette, per avere sempre una copia pronta
-  se un'unità si guasta.
-- **Sincronizzazione** tra un disco e una cartella del Mac (o un altro
-  disco), con verifica dei contenuti.
-- **Controllo di salute** delle unità, per accorgersi in tempo di quelle
-  che stanno per cedere.
+Custodrive aims to look after your disks, beyond providing an NTFS bridge.
+Planned features:
 
-## Per sviluppatori
+- **Cloning** disks and USB drives, to keep a copy ready if a drive fails.
+- **Synchronization** between a disk and a Mac folder (or another disk),
+  with content verification.
+- **Drive health checks**, to help detect failing drives early.
+
+## For developers
 
 ```sh
-Scripts/build-local-app.sh    # compila Build/Custodrive.app
-Scripts/package-app.sh        # crea Build/Custodrive-1.0.0.dmg da condividere
+Scripts/build-local-app.sh    # builds Build/Custodrive.app
+Scripts/package-app.sh        # creates Build/Custodrive-1.0.0.dmg for sharing
+sh Tests/run-localization-test.sh  # verifies the three shipped language catalogs
 ```
 
-Build, motore da riga di comando, test automatici, collaudo su Windows e
-storia del progetto: [docs/sviluppo.md](docs/sviluppo.md). Il motore NTFS si
-basa su [NTFS-3G](vendor/README.md).
+Builds, command-line engine, automated tests, Windows validation and project
+history: [development notes (Italian)](docs/sviluppo.md). The NTFS engine is
+based on [NTFS-3G](vendor/README.md).
+
+Interface strings are in `Resources/Localization/{en,it,es}.lproj`.
+English is the default and fallback. `CustodriveLanguage` stores the selected
+language; a restart applies it to both SwiftUI and AppKit dialogs. Technical
+diagnostics, paths and file names retain their original values.

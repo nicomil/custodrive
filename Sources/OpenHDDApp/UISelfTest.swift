@@ -61,6 +61,11 @@ enum UISelfTest {
         model.diskChanged()
         check("browse read-only mount", await wait { row("old.bin") != nil })
 
+        if ProcessInfo.processInfo.environment["OPENHDD_UI_SELFTEST_RECOVERY"] == "1" {
+            await recovery(model, source: source)
+            return
+        }
+
         model.beginEditing()
         let started = await wait { model.editingHere }
         let settled = await idle(model)
@@ -80,7 +85,8 @@ enum UISelfTest {
         check("Finder drop accepted", coordinator.tableView(table, acceptDrop: external, row: documents,
                                                             dropOperation: .on))
         let copied = await idle(model)
-        check("copy completes", copied && model.status.hasPrefix("Copia completata"), model.status)
+        check("copy completes", copied && model.status.hasPrefix(
+            L("Copy completed and verified: \("") in \("").").components(separatedBy: ":")[0]), model.status)
 
         // Internal drag of a row onto a folder: validated as a move.
         guard let writer = coordinator.tableView(table, pasteboardWriterForRow: old) as? NSPasteboardItem,
@@ -100,7 +106,7 @@ enum UISelfTest {
         check("row drop accepted", coordinator.tableView(table, acceptDrop: internalDrag, row: folderRow,
                                                          dropOperation: .on))
         let moved = await idle(model)
-        check("move completes", moved && model.status.hasPrefix("Spostato"), model.status)
+        check("move completes", moved && model.status.hasPrefix(L("Moved 1 item")), model.status)
         check("moved row gone", await wait { row("old.bin") == nil })
 
         // Quick Look of an image inside the copied folder, through the session.
@@ -143,6 +149,50 @@ enum UISelfTest {
         check("editable copy survives session cleanup",
               (try? Data(contentsOf: saved)) == Data("local edits survive".utf8))
         check("preview cache removed", preview.map { !FileManager.default.fileExists(atPath: $0.path) } ?? false)
+    }
+
+    private static func recovery(_ model: BrowserModel, source: URL) async {
+        model.beginEditing()
+        check("recovery inspection completes", await idle(model))
+        check("recovery refusal has exact reason", model.recoveryIssue?.reason == "both-names-missing")
+        check("write actions disabled", !model.canWrite)
+        check("journal visible for salvage", await wait { row(".OpenHDD-journal") != nil })
+        model.selection = ["old.bin"]
+        check("readable file can be exported", model.canExportSelection)
+        let saved = source.deletingLastPathComponent().appendingPathComponent("salvaged.bin")
+        if let session = model.session {
+            let exported = await Task.detached { session.export("old.bin", to: saved) }.value
+            check("readable file saved despite refusal", exported)
+        }
+        let report = model.recoveryReport() ?? ""
+        check("report includes expected paths and reason", report.contains("/missing-old.bin") &&
+              report.contains("both-names-missing") && report.contains(model.recoveryIssue?.explanation ?? "MISSING"))
+        try? report.write(to: source.deletingLastPathComponent().appendingPathComponent("recovery-report.txt"),
+                          atomically: true, encoding: .utf8)
+        model.recheckRecovery()
+        check("recheck finishes without unlocking", await idle(model) && !model.canWrite)
+        // SwiftUI publishes the new state before AppKit renders the next frame.
+        table?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        if ProcessInfo.processInfo.environment["OPENHDD_UI_EVIDENCE"] != nil,
+           let window = table?.window {
+            // NSView caching can omit SwiftUI's composited layers.
+            let capture = Process()
+            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            capture.arguments = ["-x", "-l", String(window.windowNumber),
+                source.deletingLastPathComponent().appendingPathComponent("recovery-ui.png").path]
+            do {
+                try capture.run()
+                capture.waitUntilExit()
+                check("capture recovery window", capture.terminationStatus == 0)
+            }
+            catch { check("capture recovery window", false, error.localizedDescription) }
+        }
+        model.endEditing()
+        check("refused session closes normally", await wait { model.session == nil && !model.sessionChanging })
+        check("report remains available after session", model.recoveryReport() != nil && !model.canWrite)
+        check("salvaged file survives cleanup", FileManager.default.fileExists(atPath: saved.path))
     }
 }
 

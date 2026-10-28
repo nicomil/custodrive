@@ -27,7 +27,7 @@ struct CopyPlan {
 
     var totalBytes: UInt64 { entries.reduce(0) { $0 + $1.size } }
     var replacedCount: Int { entries.filter(\.replace).count }
-    var destinationLabel: String { destination.isEmpty ? "cartella principale" : "cartella «\(destination)»" }
+    var destinationLabel: String { destination.isEmpty ? L("root folder") : L("folder “\(destination)”") }
     /// Names shown while copying, relative to the destination.
     var names: [String] {
         entries.map { entry in
@@ -109,7 +109,7 @@ enum CopyScanner {
         var names: [String: Set<String>] = [:]
         func claim(_ folder: String, _ name: String) -> Bool {
             if names[folder, default: []].insert(fold(name)).inserted { return true }
-            scan.problems.append("«\(join(folder, name))»: nome già usato nella stessa cartella (Windows non distingue maiuscole e minuscole)")
+            scan.problems.append(L("“\(join(folder, name))”: name already used in the same folder (Windows ignores letter case)"))
             return false
         }
         let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey]
@@ -137,7 +137,7 @@ enum CopyScanner {
             guard let walker = FileManager.default.enumerator(
                 at: url, includingPropertiesForKeys: keys, options: [],
                 errorHandler: { failed, _ in unreadable.append(failed.lastPathComponent); return true })
-            else { scan.problems.append("«\(name)»: cartella non leggibile"); continue }
+            else { scan.problems.append(L("“\(name)”: folder unreadable")); continue }
             for case let fileURL as URL in walker {
                 if token?.isCancelled == true { scan.cancelled = true; return scan }
                 // The walk's depth, not string prefixes: the enumerator may
@@ -170,7 +170,7 @@ enum CopyScanner {
                     scan.skipped.append(shown)
                 }
             }
-            scan.problems += unreadable.map { "«\($0)»: non leggibile" }
+            scan.problems += unreadable.map { L("“\($0)”: unreadable") }
         }
         return scan
     }
@@ -212,15 +212,15 @@ enum CopyScanner {
             var parts = folder.split(separator: "/").map(String.init)
             guard let leaf = parts.popLast() else { continue }
             if let found = listing(parts.joined(separator: "/"))[fold(leaf)], !found.isDirectory {
-                scan.problems.append("«\(folder)»: sul disco esiste già un file con questo nome")
+                scan.problems.append(L("“\(folder)”: a file with this name already exists on the disk"))
             }
         }
         for (index, entry) in scan.entries.enumerated() {
             guard let found = listing(entry.folder)[fold(entry.name)] else { continue }
             if found.isDirectory {
-                scan.problems.append("«\(entry.path)»: sul disco esiste una cartella con lo stesso nome")
+                scan.problems.append(L("“\(entry.path)”: a folder with the same name exists on the disk"))
             } else if found.name != entry.name {
-                scan.problems.append("«\(entry.path)»: sul disco esiste già come «\(found.name)» (maiuscole diverse); rinominalo o eliminalo prima")
+                scan.problems.append(L("“\(entry.path)”: already exists on the disk as “\(found.name)” (different letter case); rename or delete it first"))
             } else {
                 scan.existing.append(index)
             }
@@ -245,13 +245,13 @@ struct CopyProgress {
     func label(names: [String]) -> String {
         let name = fileIndex < names.count ? "«\(names[fileIndex])»" : ""
         switch phase {
-        case 0: return "Controlli preliminari del disco"
-        case 1 where names.isEmpty: return "Applicazione delle modifiche"
-        case 1: return "Scrittura di \(name)"
-        case 2: return "Sincronizzazione del disco"
-        case 3: return "Verifica di \(name) (rilettura dal disco)"
-        case 4: return "Pubblicazione dei nomi dei file"
-        default: return "Chiusura e controllo finale"
+        case 0: return L("Disk preflight checks")
+        case 1 where names.isEmpty: return L("Applying changes")
+        case 1: return L("Writing \(name)")
+        case 2: return L("Syncing disk")
+        case 3: return L("Verifying \(name) (reading back from disk)")
+        case 4: return L("Publishing file names")
+        default: return L("Closing and final check")
         }
     }
 }
@@ -275,12 +275,12 @@ struct TransferClock {
     }
 
     func remaining(_ progress: CopyProgress, now: TimeInterval) -> String {
-        guard now - started >= 3, unitsPerSecond > 1 else { return "Stima del tempo in corso…" }
+        guard now - started >= 3, unitsPerSecond > 1 else { return L("Estimating time…") }
         let seconds = Double(progress.total - min(progress.total, progress.done)) / unitsPerSecond
         switch seconds {
-        case ..<45: return "Meno di un minuto"
-        case ..<5400: return "Circa \(Int((seconds / 60).rounded(.up))) min"
-        default: return String(format: "Circa %.1f ore", seconds / 3600)
+        case ..<45: return L("Less than a minute")
+        case ..<5400: return L("About \(Int((seconds / 60).rounded(.up))) min")
+        default: return String(format: L("About %.1f hours"), locale: AppLanguage.current.locale, seconds / 3600)
         }
     }
 
@@ -299,20 +299,20 @@ enum NTFSCopyRunner {
 
     /// Returns a reason when Windows could not create or open `name`.
     static func problem(withName name: String) -> String? {
-        if name.isEmpty { return "nome vuoto" }
-        if name.utf16.count > 255 { return "nome troppo lungo" }
-        if name.lowercased().hasPrefix(".openhdd-") { return "nome riservato a Custodrive" }
-        if name.hasSuffix(".") || name.hasSuffix(" ") { return "termina con punto o spazio" }
+        if name.isEmpty { return L("empty name") }
+        if name.utf16.count > 255 { return L("name too long") }
+        if name.lowercased().hasPrefix(".openhdd-") { return L("name reserved for Custodrive") }
+        if name.hasSuffix(".") || name.hasSuffix(" ") { return L("ends with a dot or space") }
         let forbidden = CharacterSet(charactersIn: "\"*/:<>?\\|").union(.controlCharacters)
         if name.unicodeScalars.contains(where: { forbidden.contains($0) }) {
-            return "contiene uno dei caratteri \" * / : < > ? \\ |"
+            return L("contains one of these characters: \" * / : < > ? \\ |")
         }
         let base = name.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
             .first.map(String.init)?.trimmingCharacters(in: .whitespaces).uppercased() ?? ""
         let reserved: Set<String> = ["CON", "PRN", "AUX", "NUL"]
         let numbered = (base.hasPrefix("COM") || base.hasPrefix("LPT")) && base.count == 4 &&
             ("1"..."9").contains(String(base.last!))
-        if reserved.contains(base) || numbered { return "nome riservato da Windows" }
+        if reserved.contains(base) || numbered { return L("name reserved by Windows") }
         return nil
     }
 
@@ -328,53 +328,54 @@ enum NTFSCopyRunner {
         access("/dev/\(partition)", R_OK | W_OK) != 0
     }
 
-    /// Translates the tool's diagnostics into a short Italian message.
+    /// Translates the tool's diagnostics into a localized message.
     static func explanation(of text: String) -> String {
         let rules: [(String, String)] = [
-            ("journal state suspect", "Windows non ha chiuso correttamente il disco (journal NTFS aperto): era ancora in uso quando è stato scollegato. Ricollegalo a Windows, usa «Rimozione sicura dell'hardware» ed espellilo, poi riprova."),
-            ("hibernation state uncertain", "Windows è in ibernazione o con Avvio rapido attivo su questo disco. Spegni Windows completamente (non solo sospensione) e riprova."),
-            ("dirty volume", "Il disco risulta da controllare (volume «dirty»). Collegalo a Windows ed esegui «chkdsk X: /f» prima di scrivere."),
-            ("unfinished OpenHDD transfer", "Una copia precedente è stata interrotta. Collegalo a Windows ed esegui «chkdsk X: /f», poi riprova."),
-            ("previous OpenHDD transfer unresolved", "Una copia precedente su questo Mac non si è conclusa. Controlla il disco su Windows con «chkdsk X: /f», poi riprova."),
-            ("$TXF_DATA", "Il volume contiene dati transazionali Windows che Custodrive non modifica."),
-            ("already exists", "Esiste già un elemento con lo stesso nome nella stessa cartella (maiuscole e minuscole non contano per Windows). Scegli un altro nome."),
-            ("not enough free space", "Spazio libero insufficiente sul disco NTFS."),
-            ("not found on the volume", "L'elemento o la cartella indicati non esistono più sul disco."),
-            ("protected system entry", "Non si possono modificare i file di sistema di NTFS o di Windows ($MFT, System Volume Information…)."),
-            ("junction, symbolic", "L'elemento è o contiene un collegamento (junction o link simbolico) o un file cifrato: Custodrive non lo segue e non ha cambiato nulla."),
-            ("normal unmount failed", "macOS non riesce a smontare il disco: chiudi i file aperti da quel disco e riprova."),
-            ("not an external NTFS partition", "Il disco selezionato non è una partizione NTFS esterna."),
-            ("exclusive open", "macOS non ha lasciato l'accesso esclusivo al disco: un'altra app o il sistema lo sta usando. Chiudi i file aperti dal disco e riprova."),
-            ("geometry", "La geometria del disco non corrisponde a quella attesa: operazione annullata."),
-            ("identity", "Il disco è cambiato o è stato scollegato durante l'operazione."),
-            ("invalid new file name", "Uno dei nomi non è valido per Windows."),
-            ("not a regular file readable", "Uno dei file di origine non è leggibile."),
-            ("could not be opened", "Uno dei file di origine non si può aprire."),
-            ("changed while it was being copied", "Uno dei file di origine è stato modificato durante la copia: nessun file è stato pubblicato."),
-            ("replace a folder with a file", "Un file non può sostituire una cartella con lo stesso nome."),
-            ("differs in letter case", "Sul disco esiste già un file con lo stesso nome ma maiuscole diverse: rinominalo o eliminalo prima."),
-            ("moved into itself", "Una cartella non può essere spostata dentro se stessa."),
-            ("already in that folder", "L'elemento si trova già in quella cartella."),
-            ("overlap", "Tra gli elementi da spostare ce n'è uno contenuto in un altro: spostali separatamente."),
-            ("malformed manifest", "Elenco dei file da copiare non valido."),
+            ("journal state suspect", L("Windows did not close the disk properly (NTFS journal open): it was still in use when disconnected. Reconnect it to Windows, use “Safely Remove Hardware” to eject it, then try again.")),
+            ("hibernation state uncertain", L("Windows is hibernating or Fast Startup is enabled for this disk. Shut Windows down completely (not just sleep) and try again.")),
+            ("dirty volume", L("The disk needs checking (dirty volume). Connect it to Windows and run “chkdsk X: /f” before writing.")),
+            ("unfinished OpenHDD transfer", L("A previous copy was interrupted. Connect the disk to Windows and run “chkdsk X: /f”, then try again.")),
+            ("previous OpenHDD transfer unresolved", L("A previous copy on this Mac did not finish. Check the disk on Windows with “chkdsk X: /f”, then try again.")),
+            ("$TXF_DATA", L("The volume contains Windows transactional data that Custodrive does not modify.")),
+            ("already exists", L("An item with the same name already exists in this folder (Windows ignores letter case). Choose another name.")),
+            ("not enough free space", L("Not enough free space on the NTFS disk.")),
+            ("not found on the volume", L("The specified item or folder no longer exists on the disk.")),
+            ("protected system entry", L("NTFS or Windows system files cannot be modified ($MFT, System Volume Information…).")),
+            ("junction, symbolic", L("The item is or contains a junction, symbolic link or encrypted file: Custodrive does not follow it and has changed nothing.")),
+            ("normal unmount failed", L("macOS cannot unmount the disk: close files opened from that disk and try again.")),
+            ("not an external NTFS partition", L("The selected disk is not an external NTFS partition.")),
+            ("exclusive open", L("macOS did not grant exclusive disk access: another app or the system is using it. Close files opened from the disk and try again.")),
+            ("geometry", L("Disk geometry does not match the expected geometry: operation cancelled.")),
+            ("identity", L("The disk changed or was disconnected during the operation.")),
+            ("invalid new file name", L("One of the names is invalid on Windows.")),
+            ("not a regular file readable", L("One of the source files is unreadable.")),
+            ("could not be opened", L("One of the source files cannot be opened.")),
+            ("changed while it was being copied", L("A source file changed while copying: no file was published.")),
+            ("replace a folder with a file", L("A file cannot replace a folder with the same name.")),
+            ("differs in letter case", L("A file with the same name but different letter case already exists on the disk: rename or delete it first.")),
+            ("moved into itself", L("A folder cannot be moved into itself.")),
+            ("already in that folder", L("The item is already in that folder.")),
+            ("overlap", L("One of the items to move is inside another: move them separately.")),
+            ("malformed manifest", L("Invalid list of files to copy.")),
         ]
-        if text.contains("recovery journal or temporary entries are invalid or ambiguous") {
-            return "Recupero automatico sospeso: diario o file temporanei non verificabili. Custodrive li ha conservati senza modificarli. Conserva una copia del disco e dei file prima di una verifica manuale; non eliminare i file .OpenHDD per forzare la scrittura."
+        if let issue = RecoveryIssue(text) {
+            return L("Automatic recovery paused: no changes during the recovery attempt.\n") +
+                issue.explanation + L("\nSave readable files on another disk and keep the report. Do not delete .OpenHDD files to force writing.")
         }
-        var message = rules.first(where: { text.contains($0.0) })?.1 ?? "Operazione non riuscita."
+        var message = rules.first(where: { text.contains($0.0) })?.1 ?? L("Operation failed.")
         if let range = text.range(of: "Earlier batches: ") {
             let count = text[range.upperBound...].prefix(while: \.isNumber)
-            message += " I primi \(count) file erano già stati copiati e verificati: restano sul disco."
+            message += L(" The first \(count) files were already copied and verified: they remain on the disk.")
         }
         if text.contains("marked for checking") {
-            message += " L'operazione si è interrotta dopo l'inizio della scrittura. Prima di scrivere ancora, conserva una copia dei dati accessibili e controlla il disco su Windows con «chkdsk X: /f». Il recupero completo non è garantito."
+            message += L(" The operation stopped after writing began. Before writing again, save a copy of accessible data and check the disk on Windows with “chkdsk X: /f”. Full recovery is not guaranteed.")
         }
         let lines = text.split(separator: "\n").map(String.init)
         let detail = lines.first(where: { $0.hasPrefix("Detail:") }) ??
             lines.first(where: { $0.hasPrefix("Refused") || $0.hasPrefix("Copy failed") }) ??
             lines.last(where: { !$0.isEmpty && !$0.hasPrefix("NO SUCCESS") }) ?? ""
         let shown = detail.hasPrefix("Detail: ") ? String(detail.dropFirst(8)) : detail
-        return shown.isEmpty ? message : message + "\nDettaglio: " + shown
+        return shown.isEmpty ? message : message + L("\nDetail: ") + shown
     }
 
     /// Reads the tool's progress line: "phase file count done total".

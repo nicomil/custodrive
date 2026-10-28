@@ -36,7 +36,7 @@
 			<key>OpenHDDNTFS</key>
 			<dict>
 				<key>FSName</key>
-				<string>OpenHDD NTFS (sola lettura)</string>
+				<string>OpenHDD NTFS (read-only)</string>
 				<key>FSfileObjectsAreCaseSensitive</key>
 				<false/>
 			</dict>

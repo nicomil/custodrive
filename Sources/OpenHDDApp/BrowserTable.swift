@@ -25,9 +25,9 @@ struct BrowserTable: NSViewRepresentable {
         table.rowHeight = 22
         table.intercellSpacing = NSSize(width: 6, height: 2)
         let columns: [(String, String, CGFloat, NSSortDescriptor)] = [
-            ("name", "Nome", 320, NSSortDescriptor(key: "name", ascending: true)),
-            ("size", "Dimensione", 100, NSSortDescriptor(key: "size", ascending: false)),
-            ("date", "Data di modifica", 170, NSSortDescriptor(key: "date", ascending: false)),
+            ("name", L("Name"), 320, NSSortDescriptor(key: "name", ascending: true)),
+            ("size", L("Size"), 100, NSSortDescriptor(key: "size", ascending: false)),
+            ("date", L("Date Modified"), 170, NSSortDescriptor(key: "date", ascending: false)),
         ]
         for (id, title, width, sort) in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
@@ -72,6 +72,7 @@ struct BrowserTable: NSViewRepresentable {
         private let dateFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
+            formatter.locale = AppLanguage.current.locale
             formatter.timeStyle = .short
             formatter.doesRelativeDateFormatting = true
             return formatter
@@ -276,24 +277,24 @@ struct BrowserTable: NSViewRepresentable {
                 }
                 let selected = selectedEntries
                 if selected.count == 1 {
-                    menu.addItem(item("Apri", #selector(menuOpen)))
+                    menu.addItem(item(L("Open"), #selector(menuOpen)))
                 }
                 if selected.contains(where: { !$0.isFolder }) {
                     menu.addItem(item("Quick Look", #selector(menuQuickLook)))
                 }
                 if model.canWrite {
                     menu.addItem(.separator())
-                    if selected.count == 1 { menu.addItem(item("Rinomina", #selector(menuRename))) }
-                    menu.addItem(item("Taglia (per spostare)", #selector(menuCut)))
+                    if selected.count == 1 { menu.addItem(item(L("Rename"), #selector(menuRename))) }
+                    menu.addItem(item(L("Cut (to Move)"), #selector(menuCut)))
                     menu.addItem(.separator())
-                    menu.addItem(item("Elimina…", #selector(menuDelete)))
+                    menu.addItem(item(L("Delete…"), #selector(menuDelete)))
                 }
             }
             if model.canWrite {
                 if !menu.items.isEmpty { menu.addItem(.separator()) }
-                menu.addItem(item("Nuova cartella", #selector(menuNewFolder)))
-                menu.addItem(item("Copia qui file dal Mac…", #selector(menuCopyHere)))
-                if model.canPaste { menu.addItem(item("Sposta qui gli elementi tagliati", #selector(menuPaste))) }
+                menu.addItem(item(L("New Folder"), #selector(menuNewFolder)))
+                menu.addItem(item(L("Copy Files Here from Mac…"), #selector(menuCopyHere)))
+                if model.canPaste { menu.addItem(item(L("Move Cut Items Here"), #selector(menuPaste))) }
             }
             return menu
         }

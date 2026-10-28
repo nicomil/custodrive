@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 
 @main
 struct OpenHDDApp: App {
+    init() {
+        // Native AppKit menus and dialogs follow the explicit app language,
+        // including English on a Mac whose system language is Italian/Spanish.
+        UserDefaults.standard.set([AppLanguage.current.rawValue], forKey: "AppleLanguages")
+    }
     @StateObject private var disks = DiskStore()
     #if OPENHDD_LOCAL
     @NSApplicationDelegateAdaptor(LocalAppDelegate.self) private var delegate
@@ -16,6 +21,7 @@ struct OpenHDDApp: App {
         // it instead of opening new windows.
         Window("Custodrive", id: "main") {
             LocalBrowserView(store: disks, model: disks.browser)
+                .environment(\.locale, AppLanguage.current.locale)
                 .frame(minWidth: 820, minHeight: 480)
                 .onAppear {
                     delegate.attach(disks.browser)
@@ -27,27 +33,34 @@ struct OpenHDDApp: App {
         .commands {
             MainWindowCommand(delegate: delegate)
             CommandGroup(after: .newItem) {
-                Button("Nuova cartella") { disks.browser.newFolder() }
+                Button(L("New Folder")) { disks.browser.newFolder() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
-                Button("Copia qui file dal Mac…") { disks.browser.chooseAndCopy() }
+                Button(L("Copy Files Here from Mac…")) { disks.browser.chooseAndCopy() }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
             }
-            CommandMenu("Vai") {
-                Button("Indietro") { disks.browser.goBack() }
+            CommandMenu(L("Go")) {
+                Button(L("Back")) { disks.browser.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
-                Button("Avanti") { disks.browser.goForward() }
+                Button(L("Forward")) { disks.browser.goForward() }
                     .keyboardShortcut("]", modifiers: .command)
-                Button("Cartella superiore") { disks.browser.goUp() }
+                Button(L("Enclosing Folder")) { disks.browser.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
             }
         }
         #else
         WindowGroup {
             ContentView(store: disks)
+                .environment(\.locale, AppLanguage.current.locale)
                 .frame(minWidth: 740, minHeight: 430)
         }
         .windowResizability(.contentSize)
         #endif
+        Settings {
+            LanguagePicker()
+                .padding(20)
+                .frame(width: 420)
+                .environment(\.locale, AppLanguage.current.locale)
+        }
     }
 }
 
@@ -63,7 +76,7 @@ struct MainWindowCommand: Commands {
             delegate.openMainWindow = { open(id: "main") }
         }
         CommandGroup(after: .windowList) {
-            Button("Finestra principale") { openWindow(id: "main") }
+            Button(L("Main Window")) { openWindow(id: "main") }
                 .keyboardShortcut("0", modifiers: .command)
         }
     }
@@ -124,7 +137,7 @@ final class LocalAppDelegate: NSObject, NSApplicationDelegate {
                           error: AutoreleasingUnsafeMutablePointer<NSString?>) {
         let urls = pasteboard.readObjects(forClasses: [NSURL.self],
                                           options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        if urls.isEmpty { error.pointee = "Nessun file da copiare." as NSString; return }
+        if urls.isEmpty { error.pointee = L("No files to copy.") as NSString; return }
         deliver(urls)
     }
 
@@ -133,7 +146,7 @@ final class LocalAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, let session = model.session else { return .terminateNow }
         if model.running != nil {
-            model.alert("Operazione in corso", "Attendi la fine dell'operazione (o premi Annulla) prima di uscire.")
+            model.alert(L("Operation in progress"), L("Wait for the operation to finish (or click Cancel) before quitting."))
             return .terminateCancel
         }
         // The disk is handed back read-only before the app goes away.
@@ -169,12 +182,12 @@ struct DiskRecord: Identifiable {
                 }
                 if type == "openhdd_ntfs" || (isNTFS && type == "ntfs") {
                     return info.f_flags & UInt32(MNT_RDONLY) != 0 ?
-                        "Montato in sola lettura" : "ERRORE: mount non sola lettura"
+                        L("Mounted read-only") : L("ERROR: mount is not read-only")
                 }
             }
-            return "Montato da macOS"
+            return L("Mounted by macOS")
         }
-        return isNTFS ? "Disponibile" : "Non montato"
+        return isNTFS ? L("Available") : L("Not mounted")
     }
 
     var isMountedByOpenHDD: Bool {
@@ -291,7 +304,7 @@ private func changed(_ disk: DADisk, _ keys: CFArray, _ context: UnsafeMutableRa
 final class DiskStore: ObservableObject {
     @Published private(set) var records: [DiskRecord] = []
     @Published var selected: String?
-    @Published var message: String = "Seleziona una partizione esterna. Nessuna operazione automatica."
+    @Published var message: String = L("Select an external partition. No automatic operations.")
     @Published var busy = false
     @Published private var statusOverrides: [String: String] = [:]
 
@@ -304,7 +317,7 @@ final class DiskStore: ObservableObject {
 
     init() {
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
-            fatalError("Disk Arbitration non disponibile")
+            fatalError(L("Disk Arbitration unavailable"))
         }
         self.session = session
         let opaque = Unmanaged.passUnretained(self).toOpaque()
@@ -335,7 +348,7 @@ final class DiskStore: ObservableObject {
         let removable = (value(kDADiskDescriptionMediaRemovableKey, from: description) as? Bool) ?? false
         let external = !internalDevice || removable
         guard !whole, external else { byName.removeValue(forKey: bsd); publish(); return }
-        let format = (value(kDADiskDescriptionVolumeKindKey, from: description) as? String) ?? "Sconosciuto"
+        let format = (value(kDADiskDescriptionVolumeKindKey, from: description) as? String) ?? L("Unknown")
         let title = (value(kDADiskDescriptionVolumeNameKey, from: description) as? String) ?? bsd
         let size = (value(kDADiskDescriptionMediaSizeKey, from: description) as? NSNumber)?.uint64Value ?? 0
         let mount = value(kDADiskDescriptionVolumePathKey, from: description) as? URL
@@ -345,7 +358,7 @@ final class DiskStore: ObservableObject {
             statusOverrides.removeValue(forKey: bsd)
             if selected == bsd {
                 selected = nil
-                message = "Dispositivo cambiato. Seleziona di nuovo la partizione."
+                message = L("Device changed. Select the partition again.")
             }
         }
         let record = DiskRecord(id: bsd, bsdName: bsd, name: title, format: format,
@@ -362,7 +375,7 @@ final class DiskStore: ObservableObject {
         statusOverrides.removeValue(forKey: bsd)
         if selected == bsd {
             selected = nil
-            message = "Dispositivo scollegato."
+            message = L("Device disconnected.")
         }
         publish()
     }
@@ -393,8 +406,8 @@ final class DiskStore: ObservableObject {
         if let url = record.mountURL {
             #if OPENHDD_LOCAL
             if record.isNTFS && !mountedReadOnly(url) {
-                message = "NTFS non risulta montato in sola lettura. Apertura bloccata."
-                statusOverrides[record.bsdName] = "Verifica necessaria"
+                message = L("NTFS is not mounted read-only. Opening blocked.")
+                statusOverrides[record.bsdName] = L("Check required")
                 return
             }
             #endif
@@ -405,12 +418,12 @@ final class DiskStore: ObservableObject {
               let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, record.bsdName),
               let fresh = freshDescription(disk),
               DiskIdentity.identity(disk, description: fresh) == record.mediaIdentity else {
-            message = "Formato non gestito o identità cambiata."
+            message = L("Unsupported format or identity changed.")
             return
         }
         busy = true
-        statusOverrides[record.bsdName] = "Montaggio in corso"
-        message = "Mount tramite macOS in corso…"
+        statusOverrides[record.bsdName] = L("Mounting")
+        message = L("Mounting through macOS…")
         let request = NativeMountRequest(store: self, name: record.bsdName,
                                          readOnly: record.isNTFS)
         let context = Unmanaged.passRetained(request).toOpaque()
@@ -440,19 +453,19 @@ final class DiskStore: ObservableObject {
         busy = false
         refresh(disk)
         guard succeeded else {
-            statusOverrides[name] = "Occupato"
-            message = "macOS non ha montato il volume: disco occupato o verifica necessaria."
+            statusOverrides[name] = L("Busy")
+            message = L("macOS did not mount the volume: disk busy or check required.")
             return
         }
         statusOverrides.removeValue(forKey: name)
         guard let url = byName[name]?.mountURL else {
-            message = "macOS ha risposto, ma il percorso del volume non è disponibile."
+            message = L("macOS responded, but the volume path is unavailable.")
             return
         }
         #if OPENHDD_LOCAL
         if requestedReadOnly && !mountedReadOnly(url) {
-            statusOverrides[name] = "Verifica necessaria"
-            message = "Mount NTFS non confermato in sola lettura. Smontaggio normale in corso."
+            statusOverrides[name] = L("Check required")
+            message = L("NTFS mount not confirmed read-only. Normal unmount in progress.")
             busy = true
             let context = Unmanaged.passRetained(
                 NativeMountRequest(store: self, name: name, readOnly: false)).toOpaque()
@@ -461,7 +474,7 @@ final class DiskStore: ObservableObject {
             return
         }
         #endif
-        message = requestedReadOnly ? "Volume NTFS montato in sola lettura." : "Volume aperto tramite macOS."
+        message = requestedReadOnly ? L("NTFS volume mounted read-only.") : L("Volume opened through macOS.")
         #if OPENHDD_LOCAL
         let reveal = openFinderAfterMount
         openFinderAfterMount = true
@@ -480,13 +493,13 @@ final class DiskStore: ObservableObject {
               let fresh = freshDescription(disk),
               DiskIdentity.identity(disk, description: fresh) == record.mediaIdentity,
               (value(kDADiskDescriptionMediaSizeKey, from: fresh) as? NSNumber)?.uint64Value == record.size else {
-            message = "Identità del dispositivo cambiata: operazione annullata."
+            message = L("Device identity changed: operation cancelled.")
             return
         }
         if let problem = HelperClient.ensureAvailable() { message = problem; return }
         busy = true
-        statusOverrides[record.bsdName] = "Montaggio in corso"
-        message = "Montaggio in sola lettura in corso…"
+        statusOverrides[record.bsdName] = L("Mounting")
+        message = L("Mounting read-only…")
         Task.detached { [store = self] in
             let (code, outcome) = HelperClient.perform("mount-read-only", disk: record)
             await store.finishOperation(record, code: code, outcome: outcome, ejecting: false)
@@ -497,23 +510,23 @@ final class DiskStore: ObservableObject {
     func eject() {
         guard let record = currentSelection(),
               let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, record.bsdName) else {
-            message = "Dispositivo non più presente."
+            message = L("Device no longer present.")
             return
         }
         guard let fresh = freshDescription(disk),
               (value(kDADiskDescriptionMediaSizeKey, from: fresh) as? NSNumber)?.uint64Value == record.size,
               DiskIdentity.identity(disk, description: fresh) == record.mediaIdentity else {
-            message = "Identità del dispositivo cambiata: operazione annullata."
+            message = L("Device identity changed: operation cancelled.")
             return
         }
         #if OPENHDD_LOCAL
         guard let whole = DADiskCopyWholeDisk(disk) else {
-            message = "Impossibile identificare il disco da espellere."
+            message = L("Cannot identify the disk to eject.")
             return
         }
         busy = true
-        statusOverrides[record.bsdName] = "Espulsione in corso"
-        message = "Smontaggio normale di tutti i volumi in corso…"
+        statusOverrides[record.bsdName] = L("Ejecting")
+        message = L("Normally unmounting all volumes…")
         let context = Unmanaged.passRetained(
             NativeEjectRequest(store: self, record: record)).toOpaque()
         DADiskUnmount(whole, DADiskUnmountOptions(kDADiskUnmountOptionWhole),
@@ -521,8 +534,8 @@ final class DiskStore: ObservableObject {
         #else
         if let problem = HelperClient.ensureAvailable() { message = problem; return }
         busy = true
-        statusOverrides[record.bsdName] = "Espulsione in corso"
-        message = "Espulsione in corso…"
+        statusOverrides[record.bsdName] = L("Ejecting")
+        message = L("Ejecting…")
         Task.detached { [store = self] in
             let (code, outcome) = HelperClient.perform("eject", disk: record)
             await store.finishOperation(record, code: code, outcome: outcome, ejecting: true)
@@ -533,9 +546,9 @@ final class DiskStore: ObservableObject {
     #if OPENHDD_LOCAL
     func nativeSafetyUnmountCompleted(name: String, succeeded: Bool) {
         busy = false
-        statusOverrides[name] = "Verifica necessaria"
-        message = succeeded ? "Mount NTFS non sicuro: volume smontato. Nessun file aperto." :
-            "Mount NTFS non confermato in sola lettura. Smontaggio rifiutato: chiudi i file e usa Espelli."
+        statusOverrides[name] = L("Check required")
+        message = succeeded ? L("Unsafe NTFS mount: volume unmounted. No files opened.") :
+            L("NTFS mount not confirmed read-only. Unmount refused: close files and use Eject.")
     }
 
     func ejectAfterUnmount(_ record: DiskRecord, context: UnsafeMutableRawPointer) {
@@ -546,8 +559,8 @@ final class DiskStore: ObservableObject {
               let whole = DADiskCopyWholeDisk(disk) else {
             _ = Unmanaged<NativeEjectRequest>.fromOpaque(context).takeRetainedValue()
             busy = false
-            statusOverrides[record.bsdName] = "Verifica necessaria"
-            message = "Disco smontato, ma identità cambiata: espulsione annullata."
+            statusOverrides[record.bsdName] = L("Check required")
+            message = L("Disk unmounted, but identity changed: ejection cancelled.")
             return
         }
         DADiskEject(whole, DADiskEjectOptions(kDADiskEjectOptionDefault),
@@ -564,10 +577,10 @@ final class DiskStore: ObservableObject {
             }
             if selected == record.bsdName { selected = nil }
         } else if byName[record.bsdName]?.mediaIdentity == record.mediaIdentity {
-            statusOverrides[record.bsdName] = "Occupato"
+            statusOverrides[record.bsdName] = L("Busy")
         }
-        message = succeeded ? "Dispositivo espulso. Ora puoi scollegarlo." :
-            "Espulsione non riuscita. Controlla il disco nel Finder; nessuna forzatura."
+        message = succeeded ? L("Device ejected. You can disconnect it now.") :
+            L("Ejection failed. Check the disk in Finder; no forced ejection.")
     }
     #endif
 
@@ -584,13 +597,13 @@ final class DiskStore: ObservableObject {
             }
             if selected == record.bsdName { selected = nil }
         } else if code == 0 {
-            statusOverrides[record.bsdName] = "Montato in sola lettura"
+            statusOverrides[record.bsdName] = L("Mounted read-only")
         } else if code == EBUSY {
-            statusOverrides[record.bsdName] = "Occupato"
+            statusOverrides[record.bsdName] = L("Busy")
         } else if code == ENODEV {
-            statusOverrides[record.bsdName] = "Scollegato"
+            statusOverrides[record.bsdName] = L("Disconnected")
         } else {
-            statusOverrides[record.bsdName] = "Verifica necessaria"
+            statusOverrides[record.bsdName] = L("Check required")
         }
         if !(code == 0 && ejecting),
            let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, record.bsdName) {
@@ -630,7 +643,7 @@ private struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("OpenHDD").font(.largeTitle.bold())
-            Text("NTFS in sola lettura. Selezione e montaggio manuali.")
+            Text(L("Read-only NTFS. Manual selection and mounting."))
                 .foregroundStyle(.secondary)
             List(selection: $store.selected) {
                 // The status is part of the row identity: List rows on macOS
@@ -653,12 +666,12 @@ private struct ContentView: View {
             Text(store.message).font(.callout).foregroundStyle(.secondary)
                 .textSelection(.enabled)
             HStack {
-                Button("Apri in sola lettura") { store.requestReadOnlyMount() }
+                Button(L("Open Read-Only")) { store.requestReadOnlyMount() }
                     .disabled(store.busy || store.currentSelection()?.isNTFS != true || store.currentSelection()?.isMountedByOpenHDD == true)
-                Button("Apri nel Finder") { store.openInFinder() }
+                Button(L("Open in Finder")) { store.openInFinder() }
                     .disabled(store.busy || !store.canOpenInFinder(store.currentSelection()))
                 Spacer()
-                Button("Espelli") { store.eject() }
+                Button(L("Eject")) { store.eject() }
                     .disabled(store.busy || store.currentSelection() == nil)
             }
         }

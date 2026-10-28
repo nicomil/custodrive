@@ -16,6 +16,49 @@ struct VolumeEntry: Identifiable, Hashable, Sendable {
     var id: String { path }
 }
 
+/// Diagnostic snapshot, never an instruction to delete or relocate volume data.
+struct RecoveryIssue: Sendable {
+    let diagnostics: String
+    let reason: String
+    let record: String
+    let paths: [String]
+
+    init?(_ diagnostics: String) {
+        guard diagnostics.contains("recovery journal or temporary entries are invalid or ambiguous") else { return nil }
+        self.diagnostics = diagnostics
+        func value(_ prefix: String) -> String {
+            diagnostics.split(separator: "\n").first(where: { $0.hasPrefix(prefix) })
+                .map { String($0.dropFirst(prefix.count)) } ?? ""
+        }
+        reason = value("Recovery reason: ")
+        record = value("Recovery record: ")
+        paths = [value("Expected path 1: "), value("Expected path 2: ")].filter { !$0.isEmpty }
+    }
+
+    var explanation: String {
+        let reasons = [
+            "volume-needs-check": L("The volume needs a filesystem check. Save readable data before checking it on Windows."),
+            "unsupported-version": L("The journal comes from an unsupported version. Use a compatible build."),
+            "invalid-header": L("The journal header is incomplete or invalid."),
+            "checksum-mismatch": L("The journal contents do not match its hash: it may be incomplete or altered."),
+            "invalid-record": L("A journal entry is invalid."),
+            "parent-unavailable": L("An expected folder is unreadable or no longer exists."),
+            "entry-unreadable": L("One of the expected items is unreadable."),
+            "both-names-missing": L("Neither expected name exists anymore. Data may have been moved during repair; its location has not been established."),
+            "identity-mismatch": L("A name points to a different NTFS record than the one recorded: intervening is unsafe."),
+            "content-unverified": L("The new file cannot be read completely or does not match the saved hash. The previous copy is preserved."),
+            "different-files": L("The two names refer to different files and the journal cannot determine which one to keep."),
+            "overlapping-names": L("Journal entries refer to overlapping or equivalent names: recovery could remove a needed name."),
+            "link-count-invalid": L("The link count does not allow a name to be removed safely."),
+            "unsafe-entry": L("An expected item is protected or has an unsupported type.")
+        ]
+        var text = reasons[reason] ?? L("The journal or a temporary file cannot be verified.")
+        if !record.isEmpty && record != "0" { text += L("\nJournal entry: \(record).") }
+        if !paths.isEmpty { text += L("\nExpected paths (presence and integrity not guaranteed):\n") + paths.joined(separator: "\n") }
+        return text
+    }
+}
+
 /// "1 elemento", "3 elementi".
 func counted(_ count: Int, _ singular: String, _ plural: String) -> String {
     "\(count) " + (count == 1 ? singular : plural)
@@ -39,8 +82,8 @@ enum VolumePath {
     /// Entries the user never needs to see: NTFS metadata, Windows' own
     /// folder and OpenHDD's temporaries.
     static func hidden(_ name: String, inRoot: Bool) -> Bool {
-        name.hasPrefix(".OpenHDD-") ||
-            (inRoot && (name.hasPrefix("$") || name == "System Volume Information"))
+        name.lowercased().hasPrefix(".openhdd-") ||
+            (inRoot && (name.hasPrefix("$") || name.caseInsensitiveCompare("System Volume Information") == .orderedSame))
     }
 }
 
@@ -79,7 +122,7 @@ final class EditSession: @unchecked Sendable {
     /// administrator password once. Blocking: call off the main thread.
     static func start(partition: String) -> StartResult {
         guard let tool = NTFSCopyRunner.toolURL else {
-            return .failed("Componente di scrittura mancante nell'app.")
+            return .failed(L("Write component missing from the app."))
         }
         let process = Process()
         process.executableURL = tool
@@ -96,7 +139,7 @@ final class EditSession: @unchecked Sendable {
                                                     attributes: [.posixPermissions: 0o700])
             try process.run()
         } catch {
-            return .failed("Avvio della sessione non riuscito: \(error.localizedDescription)")
+            return .failed(L("Session could not start: \(error.localizedDescription)"))
         }
         let session = EditSession(partition: partition, process: process,
                                   input: input.fileHandleForWriting,
@@ -173,8 +216,8 @@ final class EditSession: @unchecked Sendable {
         case failed(String)
     }
 
-    func list(_ folder: String) -> ListResult {
-        guard let reply = call(["list", folder]) else { return .failed("Sessione terminata.") }
+    func list(_ folder: String, includeRecovery: Bool = false) -> ListResult {
+        guard let reply = call(["list", folder]) else { return .failed(L("Session ended.")) }
         guard reply.first == "ok" else {
             let code = reply.count > 1 ? Int32(reply[1]) ?? 0 : 0
             return code == ENOENT || code == ENOTDIR ? .missing :
@@ -187,7 +230,8 @@ final class EditSession: @unchecked Sendable {
         for index in stride(from: 0, to: body.count - body.count % 5, by: 5) {
             let name = body[index]
             let nanoseconds = Int64(body[index + 3]) ?? 0
-            if VolumePath.hidden(name, inRoot: inRoot) { continue }
+            if VolumePath.hidden(name, inRoot: inRoot) &&
+                !(includeRecovery && name.lowercased().hasPrefix(".openhdd-")) { continue }
             entries.append(VolumeEntry(
                 name: name, path: VolumePath.join(folder, name),
                 isFolder: body[index + 1] == "2", size: UInt64(body[index + 2]) ?? 0,
@@ -229,7 +273,7 @@ final class EditSession: @unchecked Sendable {
     /// A copy or an edit; the reply carries the diagnostics as last field.
     func write(_ fields: [String]) -> (ok: Bool, stage: Int, text: String) {
         guard let reply = call(fields) else {
-            return (false, 2, "Sessione interrotta: il disco è stato scollegato o lo strumento si è fermato.")
+            return (false, 2, L("Session interrupted: the disk was disconnected or the tool stopped."))
         }
         let stage = reply.first == "error" && reply.count > 2 ? Int(reply[2]) ?? 1 : 0
         return (reply.first == "ok", stage, reply.last ?? "")

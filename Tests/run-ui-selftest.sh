@@ -5,6 +5,7 @@
 # folders, refusals), the edit session and Quick Look, then checks the image.
 #
 # Usage: Tests/run-ui-selftest.sh RAW_DISK_IMAGE_WITH_ONE_NTFS_PARTITION
+# OPENHDD_UI_SELFTEST_LANGUAGE=en|it|es selects the test language (default en).
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -49,7 +50,8 @@ printf 'nota è\n' > "$src/nota.txt"
 
 # Separate bundle identity: testing must not quit a user's live edit session.
 OPENHDD_UI_SELFTEST_DISK="$label" OPENHDD_UI_SELFTEST_REPORT="$work/report.txt" \
-OPENHDD_UI_SELFTEST_SOURCE="$src" "$app/Contents/MacOS/Custodrive" >"$work/app.log" 2>&1 &
+OPENHDD_UI_SELFTEST_SOURCE="$src" "$app/Contents/MacOS/Custodrive" \
+  -CustodriveLanguage "${OPENHDD_UI_SELFTEST_LANGUAGE:-en}" >"$work/app.log" 2>&1 &
 pid=$!
 waited=0
 while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 240 ]; do sleep 1; waited=$((waited + 1)); done
@@ -61,6 +63,18 @@ grep -q '^FAIL' "$work/report.txt" && fail "in-app steps failed"
 # The volume the app left behind: clean, no temporaries, contents right.
 mount=$(diskutil info "${disk}s1" | awk -F': *' '/Mount Point/ {print $2}')
 [ -n "$mount" ] || fail "volume not remounted"
+if [ "${OPENHDD_UI_SELFTEST_RECOVERY:-0}" = 1 ]; then
+  cmp -s "$mount/old.bin" "$work/salvaged.bin" || fail "salvaged file differs"
+  hdiutil detach "$disk" >/dev/null
+  disk=
+  cmp -s "$source_image" "$work/disk.img" || fail "read-only recovery assistance changed the image"
+  if [ -n "${OPENHDD_UI_EVIDENCE:-}" ]; then
+    mkdir -p "$OPENHDD_UI_EVIDENCE"
+    cp "$work/report.txt" "$work/recovery-report.txt" "$work/recovery-ui.png" "$OPENHDD_UI_EVIDENCE/"
+  fi
+  echo 'PASS: recovery banner, blocked writes, report, salvage, repeated read-only inspection; image unchanged'
+  exit 0
+fi
 cmp -s "$mount/Documenti/Scatti/foto 1.png" "$src/foto 1.png" || fail "copied image differs"
 cmp -s "$mount/Documenti/Scatti/nota.txt" "$src/nota.txt" || fail "copied note differs"
 [ -f "$mount/Documenti/old.bin" ] && [ ! -e "$mount/old.bin" ] || fail "move not applied"

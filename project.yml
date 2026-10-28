@@ -1,5 +1,6 @@
 name: OpenHDD
 options:
+  developmentLanguage: en
   bundleIdPrefix: it.openhdd
   deploymentTarget:
     macOS: "15.4"
@@ -22,6 +23,9 @@ targets:
       - path: Sources/OpenHDDApp/BrowserTable.swift
       - path: Sources/OpenHDDApp/BrowserView.swift
       - path: Sources/OpenHDDApp/UISelfTest.swift
+      - path: Sources/OpenHDDApp/Localization.swift
+      - path: Resources/Localization
+        buildPhase: resources
       - path: Resources/AppIcon.icns
         buildPhase: resources
       - path: Sources/Shared/DiskHelperProtocol.swift
@@ -32,20 +36,24 @@ targets:
         CFBundleName: Custodrive
         CFBundleIconFile: AppIcon
         LSApplicationCategoryType: public.app-category.utilities
-        NSHumanReadableCopyright: "Custodrive — dischi esterni al sicuro"
+        NSHumanReadableCopyright: "Custodrive — verified copies for external disks"
+        CFBundleLocalizations: [en, it, es]
         CFBundleShortVersionString: "1.0.0"
         CFBundleVersion: "1"
         LSMinimumSystemVersion: "15.4"
         # Files dropped on the Dock icon are offered for copying.
         CFBundleDocumentTypes:
-          - CFBundleTypeName: File e cartelle da copiare su NTFS
+          - CFBundleTypeName: Files and folders to copy to NTFS
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [public.item, public.folder]
-        # Finder: right click > Services > Copia su disco NTFS con Custodrive.
+        # Finder: right click > Services. These labels follow the host language.
         NSServices:
           - NSMenuItem:
-              default: Copia su disco NTFS con Custodrive
+              default: Copy to NTFS Disk with Custodrive
+              en: Copy to NTFS Disk with Custodrive
+              it: Copia su disco NTFS con Custodrive
+              es: Copiar en disco NTFS con Custodrive
             NSMessage: copyToNTFS
             NSPortName: Custodrive
             NSRequiredContext: {}
@@ -74,6 +82,8 @@ targets:
     platform: macOS
     sources:
       - path: Sources/OpenHDDApp
+      - path: Resources/Localization
+        buildPhase: resources
       - path: Sources/Shared/DiskHelperProtocol.swift
       - path: Sources/LaunchDaemons/it.openhdd.app.helper.plist
         buildPhase:
@@ -84,6 +94,7 @@ targets:
       path: Sources/OpenHDDApp/Info.plist
       properties:
         CFBundleDisplayName: OpenHDD
+        CFBundleLocalizations: [en, it, es]
         CFBundleShortVersionString: "0.1.0"
         LSMinimumSystemVersion: "15.4"
     settings:
@@ -119,7 +130,7 @@ targets:
           FSMediaTypes: {}
           FSPersonalities:
             OpenHDDNTFS:
-              FSName: OpenHDD NTFS (sola lettura)
+              FSName: OpenHDD NTFS (read-only)
               FSfileObjectsAreCaseSensitive: false
           FSRequiresSecurityScopedPathURLResources: false
           FSShortName: openhdd_ntfs

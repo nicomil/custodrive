@@ -1,5 +1,7 @@
 # NTFS-3G source provenance
 
+**English** · [Italiano](README.it.md) · [Español](README.es.md)
+
 - Upstream: Tuxera, NTFS-3G / ntfsprogs 2026.7.7
 - Source archive: https://tuxera.com/opensource/ntfs-3g_ntfsprogs-2026.7.7.tgz
 - SHA-256 of original archive: `d67b769025d32860549d35c2147e45024d172f81c540d750390ce3602c059dab`
