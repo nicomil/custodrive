@@ -34,7 +34,7 @@ de edición y las copias en curso continúan normalmente. Las capturas muestran
 la interfaz en italiano.
 
 <p align="center">
-  <img src="docs/images/01-browser.png" width="780" alt="Custodrive: discos a la izquierda, contenido a la derecha">
+  <img src="docs/images/es/01-browser.png" width="780" alt="Custodrive: discos a la izquierda, contenido a la derecha">
 </p>
 
 ## Índice
@@ -75,7 +75,7 @@ Mientras no modifiques nada, el disco permanece montado en modo de solo
 lectura y también está visible en el Finder.
 
 <p align="center">
-  <img src="docs/images/02-folder.png" width="780" alt="Una carpeta de fotos abierta en Custodrive">
+  <img src="docs/images/es/02-folder.png" width="780" alt="Una carpeta de fotos abierta en Custodrive">
 </p>
 
 ### 3. Copiar y editar
@@ -86,7 +86,7 @@ administrador una sola vez**. El disco pasa a **Edición activa**: queda
 reservado para Custodrive y cada operación se aplica inmediatamente.
 
 <p align="center">
-  <img src="docs/images/03-edit-session.png" width="780" alt="Edición activa: disco reservado para Custodrive">
+  <img src="docs/images/es/03-edit-session.png" width="780" alt="Edición activa: disco reservado para Custodrive">
 </p>
 
 ### 4. Terminar y expulsar
@@ -132,7 +132,7 @@ Expulsar el disco o cerrar la aplicación también termina la edición.
   con una sola barra, velocidad y tiempo restante.
 
 <p align="center">
-  <img src="docs/images/04-copy-progress.png" width="780" alt="Copia en curso, tiempo restante y botón Cancelar">
+  <img src="docs/images/es/04-copy-progress.png" width="780" alt="Copia en curso, tiempo restante y botón Cancelar">
 </p>
 
 ### Organizar
@@ -147,7 +147,7 @@ Expulsar el disco o cerrar la aplicación también termina la edición.
 - **Menú contextual** con todas las acciones mediante clic derecho.
 
 <p align="center">
-  <img src="docs/images/05-delete-confirm.png" width="260" alt="Confirmación de eliminación">
+  <img src="docs/images/es/05-delete-confirm.png" width="260" alt="Confirmación de eliminación">
 </p>
 
 ### Cola y cancelación
@@ -260,6 +260,7 @@ Próximas funciones previstas:
 ```sh
 Scripts/build-local-app.sh    # compila Build/Custodrive.app
 Scripts/package-app.sh        # crea Build/Custodrive-1.1.1.dmg para compartir
+Scripts/readme-screenshots.sh # regenera las capturas de los README (en, it, es)
 sh Tests/run-localization-test.sh  # verifica los tres catálogos de idiomas
 ```
 

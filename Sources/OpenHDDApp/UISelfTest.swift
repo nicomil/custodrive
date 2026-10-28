@@ -15,6 +15,13 @@ enum UISelfTest {
 
     static func runIfRequested(_ model: BrowserModel) {
         let environment = ProcessInfo.processInfo.environment
+        if let shots = environment["OPENHDD_README_SHOTS"] {
+            Task { @MainActor in
+                await ReadmeShots.run(model, plan: URL(fileURLWithPath: shots))
+                NSApp.terminate(nil)
+            }
+            return
+        }
         guard let disk = environment["OPENHDD_UI_SELFTEST_DISK"],
               let report = environment["OPENHDD_UI_SELFTEST_REPORT"],
               let source = environment["OPENHDD_UI_SELFTEST_SOURCE"] else { return }

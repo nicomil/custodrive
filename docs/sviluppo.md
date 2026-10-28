@@ -28,6 +28,7 @@ parte del formato che il recupero riconosce.
 | `Tests/run-session-probe.sh` | sessione di modifica: protocollo, sfoglia, esporta, rifiuti, fine input, annullamento |
 | `Tests/run-recovery-probe.sh` | diari contraffatti/troncati, alias NTFS, riferimenti MFT obsoleti, hash sostituzione, rinomina cartelle e recupero nuovamente interrotto; copie di cartelle interrotte (diario v3) senza cartelle vuote residue; rifiuti senza modifiche all'immagine |
 | `Tests/run-copy-scanner-test.sh` | confronto della copia con il disco senza disco: cartelle esistenti da unire, file d'intralcio |
+| `Scripts/readme-screenshots.sh [en it es]` | rigenera gli screenshot dei README: immagini NTFS usa e getta con nomi tradotti, giro nell'app di test (`ReadmeShots.swift`), cattura delle finestre in `docs/images/<lingua>/` |
 | `Tests/run-ui-selftest.sh IMMAGINE` | immagine MBR sacrificabile con `old.bin` e `Documenti`: drop, trascinamento, Quick Look non modificabile, copia esportata conservata dopo fine sessione |
 | `OPENHDD_CAMPAIGN_EDIT=… Tests/run-powercut-campaign.sh` | tagli di corrente a ogni scrittura (copia, cartelle, sostituzione, spostamento, rinomina, nuova cartella, eliminazione) |
 | `Tests/prepare-windows-v3-cases.sh` + `Tests/windows/verify-v1-cases.ps1` | verifica `chkdsk` su Windows di casi completati, interrotti e tagliati |

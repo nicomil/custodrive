@@ -258,7 +258,6 @@
 "name too long" = "nombre demasiado largo";
 "root folder" = "carpeta raíz";
 "{0} failed: file unreadable." = "{0} fallida: archivo ilegible.";
-"{0} files" = "{0} archivos";
 "{0} items" = "{0} elementos";
 "{0} items ready" = "{0} elementos preparados";
 "{0} items with the same name already exist" = "Ya existen {0} elementos con el mismo nombre";
@@ -303,3 +302,5 @@
 "{0} folders with the same name already exist" = "Ya existen {0} carpetas con el mismo nombre";
 "\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied." = "\n\n«Combinar»: los elementos copiados se añaden a la carpeta existente y no se elimina nada de lo que contiene. Para los archivos con el mismo nombre se pregunta a continuación.\n«Cancelar»: no se copia nada.";
 "Merge" = "Combinar";
+"file" = "archivo";
+"files" = "archivos";

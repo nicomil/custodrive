@@ -33,7 +33,7 @@ then restart the app to apply your choice. Existing edit sessions and copies
 continue normally. Screenshots below show the Italian interface.
 
 <p align="center">
-  <img src="docs/images/01-browser.png" width="780" alt="Custodrive: disks on the left, disk contents on the right">
+  <img src="docs/images/en/01-browser.png" width="780" alt="Custodrive: disks on the left, disk contents on the right">
 </p>
 
 ## Contents
@@ -73,7 +73,7 @@ Disks**. Select it and browse folders as in Finder. Until you make a change,
 the disk remains mounted read-only and is also visible in Finder.
 
 <p align="center">
-  <img src="docs/images/02-folder.png" width="780" alt="A photo folder open in Custodrive">
+  <img src="docs/images/en/02-folder.png" width="780" alt="A photo folder open in Custodrive">
 </p>
 
 ### 3. Copy and edit
@@ -84,7 +84,7 @@ The disk then shows **Editing active**: it is reserved for Custodrive,
 and each operation takes effect immediately.
 
 <p align="center">
-  <img src="docs/images/03-edit-session.png" width="780" alt="Editing active: the disk is reserved for Custodrive">
+  <img src="docs/images/en/03-edit-session.png" width="780" alt="Editing active: the disk is reserved for Custodrive">
 </p>
 
 ### 4. Finish and eject
@@ -128,7 +128,7 @@ or quitting the app, also finishes the edit session automatically.
   progress bar, transfer speed and time remaining.
 
 <p align="center">
-  <img src="docs/images/04-copy-progress.png" width="780" alt="Copy progress bar, remaining time and Cancel button">
+  <img src="docs/images/en/04-copy-progress.png" width="780" alt="Copy progress bar, remaining time and Cancel button">
 </p>
 
 ### Organize
@@ -143,7 +143,7 @@ or quitting the app, also finishes the edit session automatically.
 - **Context menu** with all actions available by right-clicking.
 
 <p align="center">
-  <img src="docs/images/05-delete-confirm.png" width="260" alt="Deletion confirmation">
+  <img src="docs/images/en/05-delete-confirm.png" width="260" alt="Deletion confirmation">
 </p>
 
 ### Queue and cancellation
@@ -251,6 +251,7 @@ Planned features:
 ```sh
 Scripts/build-local-app.sh    # builds Build/Custodrive.app
 Scripts/package-app.sh        # creates Build/Custodrive-1.1.1.dmg for sharing
+Scripts/readme-screenshots.sh # regenerates the README screenshots (en, it, es)
 sh Tests/run-localization-test.sh  # verifies the three shipped language catalogs
 ```
 

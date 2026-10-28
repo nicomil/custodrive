@@ -34,7 +34,7 @@ modifica e copie in corso proseguono normalmente. Le immagini mostrano
 l’interfaccia italiana.
 
 <p align="center">
-  <img src="docs/images/01-browser.png" width="780" alt="Custodrive: dischi a sinistra, contenuto del disco a destra">
+  <img src="docs/images/it/01-browser.png" width="780" alt="Custodrive: dischi a sinistra, contenuto del disco a destra">
 </p>
 
 ## Indice
@@ -76,7 +76,7 @@ modifichi niente, il disco resta montato in sola lettura ed è visibile
 anche nel Finder.
 
 <p align="center">
-  <img src="docs/images/02-folder.png" width="780" alt="Una cartella di foto aperta in Custodrive">
+  <img src="docs/images/it/02-folder.png" width="780" alt="Una cartella di foto aperta in Custodrive">
 </p>
 
 ### 3. Copia e modifica
@@ -87,7 +87,7 @@ una sola volta**. Da quel momento il disco è in **modifica attiva**:
 riservato a Custodrive, con ogni operazione immediata.
 
 <p align="center">
-  <img src="docs/images/03-edit-session.png" width="780" alt="Modifica attiva: il disco è riservato a Custodrive">
+  <img src="docs/images/it/03-edit-session.png" width="780" alt="Modifica attiva: il disco è riservato a Custodrive">
 </p>
 
 ### 4. Termina ed espelli
@@ -129,7 +129,7 @@ Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
   una sola barra, la velocità e il tempo rimanente.
 
 <p align="center">
-  <img src="docs/images/04-copy-progress.png" width="780" alt="Copia in corso con barra di avanzamento, tempo rimanente e pulsante Annulla">
+  <img src="docs/images/it/04-copy-progress.png" width="780" alt="Copia in corso con barra di avanzamento, tempo rimanente e pulsante Annulla">
 </p>
 
 ### Organizzare
@@ -144,7 +144,7 @@ Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
 - **Menu contestuale** con il tasto destro, con tutte le azioni.
 
 <p align="center">
-  <img src="docs/images/05-delete-confirm.png" width="260" alt="Conferma di eliminazione">
+  <img src="docs/images/it/05-delete-confirm.png" width="260" alt="Conferma di eliminazione">
 </p>
 
 ### Coda e annullamento
@@ -254,6 +254,7 @@ verso NTFS. Prossime funzioni previste:
 ```sh
 Scripts/build-local-app.sh    # compila Build/Custodrive.app
 Scripts/package-app.sh        # crea Build/Custodrive-1.1.1.dmg da condividere
+Scripts/readme-screenshots.sh # rigenera gli screenshot dei README (en, it, es)
 sh Tests/run-localization-test.sh  # verifica i tre cataloghi lingua
 ```
 

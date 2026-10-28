@@ -23,6 +23,7 @@ targets:
       - path: Sources/OpenHDDApp/BrowserTable.swift
       - path: Sources/OpenHDDApp/BrowserView.swift
       - path: Sources/OpenHDDApp/UISelfTest.swift
+      - path: Sources/OpenHDDApp/ReadmeShots.swift
       - path: Sources/OpenHDDApp/Localization.swift
       - path: Resources/Localization
         buildPhase: resources

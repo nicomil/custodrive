@@ -258,7 +258,6 @@
 "name too long" = "name too long";
 "root folder" = "root folder";
 "{0} failed: file unreadable." = "{0} failed: file unreadable.";
-"{0} files" = "{0} files";
 "{0} items" = "{0} items";
 "{0} items ready" = "{0} items ready";
 "{0} items with the same name already exist" = "{0} items with the same name already exist";
@@ -303,3 +302,5 @@
 "{0} folders with the same name already exist" = "{0} folders with the same name already exist";
 "\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied." = "\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied.";
 "Merge" = "Merge";
+"file" = "file";
+"files" = "files";

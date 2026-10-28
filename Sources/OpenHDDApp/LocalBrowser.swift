@@ -670,7 +670,7 @@ final class BrowserModel: ObservableObject {
         }
         #endif
         let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: plan.totalBytes), countStyle: .file)
-        var what = L("\(plan.entries.count) files")
+        var what = counted(plan.entries.count, L("file"), L("files"))
         if !plan.folders.isEmpty { what += L(" and ") + counted(plan.folders.count, L("folder"), L("folders")) }
         if plan.replacedCount > 0 { what += L(" (\(plan.replacedCount) replaced)") }
         let target = folder.isEmpty ? "«\(volume)»" : "«\(VolumePath.name(folder))»"
@@ -791,8 +791,8 @@ final class BrowserModel: ObservableObject {
                                  revealForRename: nil))
     }
 
-    func delete(_ paths: [String]) {
-        guard let record, canWrite, !paths.isEmpty else { return }
+    /// The confirmation shown before deleting; also used for README screenshots.
+    func deleteConfirmation(_ paths: [String]) -> NSAlert {
         let names = paths.map(VolumePath.name)
         let confirm = NSAlert()
         confirm.alertStyle = .warning
@@ -803,7 +803,12 @@ final class BrowserModel: ObservableObject {
         confirm.addButton(withTitle: L("Delete"))
         confirm.addButton(withTitle: L("Cancel"))
         confirm.buttons.first?.hasDestructiveAction = true
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        return confirm
+    }
+
+    func delete(_ paths: [String]) {
+        guard let record, canWrite, !paths.isEmpty else { return }
+        guard deleteConfirmation(paths).runModal() == .alertFirstButtonReturn else { return }
         enqueue(PendingOperation(partition: record.bsdName, title: L("Deleting"),
                                  kind: .edit(command: "delete", arguments: paths), names: [],
                                  success: paths.count == 1 ? L("Deleted 1 item.") : L("Deleted \(paths.count) items."),
