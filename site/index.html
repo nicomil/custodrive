@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custodrive — verified copies to NTFS disks on your Mac</title>
+<meta name="description" content="Custodrive reads and writes Windows (NTFS) disks and USB drives on your Mac, with a Finder-like window. Every copy is read back and verified. Free and open source.">
+<meta property="og:title" content="Custodrive">
+<meta property="og:description" content="Read and write NTFS disks on your Mac. Every copy is read back and verified.">
+<meta property="og:image" content="images/en/01-browser.png">
+<link rel="icon" type="image/png" href="images/icon.png">
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --surface: #ffffff;
+    --surface-2: #eef1f7;
+    --text: #141a26;
+    --muted: #556075;
+    --line: #dde2ec;
+    --brand: #1d4e89;
+    --brand-strong: #163b69;
+    --brand-soft: #e3ecf8;
+    --ok: #2e9e6a;
+    --warn-bg: #fff6e5;
+    --warn-line: #f0d39a;
+    --shadow: 0 18px 50px rgba(20, 30, 60, .14), 0 2px 6px rgba(20, 30, 60, .06);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e121a;
+      --surface: #161c27;
+      --surface-2: #1d2532;
+      --text: #e9edf5;
+      --muted: #9aa6bb;
+      --line: #2a3445;
+      --brand: #7fb0ec;
+      --brand-strong: #a9cbf5;
+      --brand-soft: #1b2b44;
+      --ok: #5fd39b;
+      --warn-bg: #2a2416;
+      --warn-line: #5b4a22;
+      --shadow: 0 18px 50px rgba(0, 0, 0, .45), 0 2px 6px rgba(0, 0, 0, .3);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e121a; --surface: #161c27; --surface-2: #1d2532; --text: #e9edf5;
+    --muted: #9aa6bb; --line: #2a3445; --brand: #7fb0ec; --brand-strong: #a9cbf5;
+    --brand-soft: #1b2b44; --ok: #5fd39b; --warn-bg: #2a2416; --warn-line: #5b4a22;
+    --shadow: 0 18px 50px rgba(0, 0, 0, .45), 0 2px 6px rgba(0, 0, 0, .3);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: var(--brand); }
+  img { max-width: 100%; height: auto; display: block; }
+  code { font: 0.9em ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--surface-2);
+         padding: .1em .35em; border-radius: 5px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+  header.top { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent);
+               backdrop-filter: saturate(1.4) blur(12px); -webkit-backdrop-filter: saturate(1.4) blur(12px);
+               border-bottom: 1px solid var(--line); }
+  .bar { display: flex; align-items: center; gap: 12px; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px;
+           color: var(--text); text-decoration: none; margin-right: auto; }
+  .brand img { width: 30px; height: 30px; }
+  .lang { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .lang button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px;
+                 padding: 5px 11px; cursor: pointer; }
+  .lang button[aria-pressed="true"] { background: var(--brand); color: #fff; }
+  .gh { font-size: 15px; text-decoration: none; color: var(--muted); white-space: nowrap; }
+  .gh:hover { color: var(--text); }
+
+  .hero { text-align: center; padding: 64px 0 36px; }
+  .hero .icon { width: 112px; height: 112px; margin: 0 auto 22px; filter: drop-shadow(0 10px 22px rgba(29, 78, 137, .3)); }
+  h1 { font-size: clamp(32px, 6vw, 54px); line-height: 1.08; letter-spacing: -.02em; margin: 0 0 16px; }
+  .lead { font-size: clamp(18px, 2.4vw, 21px); color: var(--muted); max-width: 680px; margin: 0 auto 28px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 9px; padding: 13px 22px; border-radius: 12px;
+         font-weight: 600; text-decoration: none; font-size: 17px; border: 1px solid transparent; }
+  .btn.primary { background: var(--brand); color: #fff; box-shadow: 0 6px 18px rgba(29, 78, 137, .3); }
+  :root[data-theme="dark"] .btn.primary { color: #0e121a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #0e121a; } }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { border-color: var(--line); color: var(--text); background: var(--surface); }
+  .btn svg { width: 20px; height: 20px; }
+  .meta { margin-top: 14px; font-size: 14px; color: var(--muted); }
+  .shot { margin: 42px auto 0; border-radius: 14px; box-shadow: var(--shadow); max-width: 900px; width: 100%; }
+
+  section { padding: 56px 0; }
+  section + section { border-top: 1px solid var(--line); }
+  h2 { font-size: clamp(26px, 4vw, 34px); letter-spacing: -.01em; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 32px; max-width: 720px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .card h3 { margin: 10px 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  .glyph { width: 38px; height: 38px; border-radius: 10px; background: var(--brand-soft); color: var(--brand);
+           display: grid; place-items: center; }
+  .glyph svg { width: 21px; height: 21px; }
+
+  .gallery { display: grid; gap: 28px 22px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+             align-items: center; }
+  figure { margin: 0; }
+  figure img { border-radius: 10px; box-shadow: var(--shadow); }
+  figcaption { font-size: 14.5px; color: var(--muted); margin-top: 10px; }
+
+  ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+  ol.steps li { counter-increment: s; background: var(--surface); border: 1px solid var(--line);
+                border-radius: 14px; padding: 16px 18px 16px 58px; position: relative; }
+  ol.steps li::before { content: counter(s); position: absolute; left: 16px; top: 15px; width: 28px; height: 28px;
+                        border-radius: 50%; background: var(--brand); color: var(--bg); font-weight: 700;
+                        display: grid; place-items: center; font-size: 15px; }
+  .protect { display: grid; gap: 12px; }
+  .protect div { display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start; }
+  .protect svg { width: 22px; height: 22px; color: var(--ok); margin-top: 3px; }
+  .protect p { margin: 0; }
+  .note { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 12px; padding: 14px 16px;
+          margin-top: 22px; font-size: 15.5px; }
+  .cols { display: grid; gap: 28px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+  ul.plain { margin: 0; padding-left: 20px; }
+  ul.plain li { margin: 4px 0; }
+  .terminal { margin-top: 12px; background: #10151f; color: #d7e3f4; border-radius: 10px; padding: 12px 14px;
+              font: 14px ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow-x: auto; }
+
+  footer { border-top: 1px solid var(--line); padding: 30px 0 44px; color: var(--muted); font-size: 14.5px; }
+  footer .wrap { display: grid; gap: 8px; }
+  .hash { word-break: break-all; }
+  @media (max-width: 560px) {
+    body { font-size: 16px; }
+    .gh span { display: none; }
+    .hero { padding-top: 40px; }
+    section { padding: 42px 0; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="#"><img src="images/icon.png" alt="">Custodrive</a>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" data-lang="en">EN</button>
+      <button type="button" data-lang="it">IT</button>
+      <button type="button" data-lang="es">ES</button>
+    </div>
+    <a class="gh" href="https://github.com/nicomil/custodrive"><span>GitHub</span> ↗</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <img class="icon" src="images/icon.png" alt="Custodrive icon">
+    <h1 data-t="heroTitle">Write to Windows disks from your Mac, with every copy verified.</h1>
+    <p class="lead" data-t="heroLead">Custodrive reads and writes NTFS disks and USB drives in a Finder-like window. Every file is read back from the disk and compared with the original before it appears.</p>
+    <div class="cta">
+      <a class="btn primary" href="Custodrive.dmg" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+        <span data-t="download">Download for Mac</span>
+      </a>
+      <a class="btn ghost" href="https://github.com/nicomil/custodrive" data-t="source">Source code</a>
+    </div>
+    <p class="meta"><span data-t="meta">Version</span> <span class="version"></span> · 1.4 MB · Apple Silicon · macOS 15.4+ · <span data-t="free">free and open source</span></p>
+    <img class="shot" data-shot="01-browser" src="images/en/01-browser.png" alt="Custodrive: disks on the left, the disk contents on the right">
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2 data-t="featuresTitle">Everything you need on an NTFS disk</h2>
+      <p class="sub" data-t="featuresSub">macOS reads NTFS but cannot write to it. Custodrive adds the missing half, without drivers or kernel extensions.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+          <h3 data-t="f1t">Browse like in Finder</h3>
+          <p data-t="f1p">All external disks in the sidebar, sortable columns, clickable path, Back and Forward, and Quick Look with the space bar.</p>
+        </div>
+        <div class="card">
+          <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></div>
+          <h3 data-t="f2t">Verified copies</h3>
+          <p data-t="f2p">Drag files and whole folders from Finder. Each file is read back and checked with SHA-256 before it gets its final name.</p>
+        </div>
+        <div class="card">
+          <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/></svg></div>
+          <h3 data-t="f3t">Organize</h3>
+          <p data-t="f3p">New folder, rename in place, move by dragging or with ⌘X / ⌘V, and delete with a confirmation, since NTFS has no Trash.</p>
+        </div>
+        <div class="card">
+          <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h10M4 6h16M4 18h7"/><circle cx="18" cy="16" r="3"/></svg></div>
+          <h3 data-t="f4t">Large copies, under control</h3>
+          <p data-t="f4p">Batches of up to 1000 files or 8 GB, one progress bar with speed and time remaining, a queue, and a Cancel that leaves the disk clean.</p>
+        </div>
+        <div class="card">
+          <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
+          <h3 data-t="f5t">One password per session</h3>
+          <p data-t="f5p">Start editing once: the disk stays reserved for Custodrive until you finish, and every change is checked again.</p>
+        </div>
+        <div class="card">
+          <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></div>
+          <h3 data-t="f6t">English, Italian, Spanish</h3>
+          <p data-t="f6p">Choose the language from the globe menu in the toolbar. Copy to the disk also from Finder's Services menu or the Dock icon.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screens">
+    <div class="wrap">
+      <h2 data-t="screensTitle">A closer look</h2>
+      <p class="sub" data-t="screensSub">Read-only until you choose to edit, and always clear about what is happening.</p>
+      <div class="gallery">
+        <figure><img data-shot="02-folder" src="images/en/02-folder.png" alt="" loading="lazy"><figcaption data-t="c2">A folder of photos, read-only.</figcaption></figure>
+        <figure><img data-shot="03-edit-session" src="images/en/03-edit-session.png" alt="" loading="lazy"><figcaption data-t="c3">Editing active: the disk is reserved for Custodrive.</figcaption></figure>
+        <figure><img data-shot="04-copy-progress" src="images/en/04-copy-progress.png" alt="" loading="lazy"><figcaption data-t="c4">A large copy, verified by reading it back from the disk.</figcaption></figure>
+        <figure><img data-shot="05-delete-confirm" src="images/en/05-delete-confirm.png" alt="" loading="lazy" style="max-width:300px;margin:0 auto"><figcaption data-t="c5" style="text-align:center">Deleting always asks first.</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="safety">
+    <div class="wrap cols">
+      <div>
+        <h2 data-t="safetyTitle">How it protects your data</h2>
+        <p class="sub" data-t="safetySub">Measures to detect errors and limit damage, tested with simulated interruptions and real USB unplugs.</p>
+      </div>
+      <div class="protect">
+        <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><p data-t="p1"><b>Marked “needs checking”</b> before every change, cleared only when the operation is complete and verified.</p></div>
+        <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><p data-t="p2"><b>Nothing overwritten in place.</b> New files are written apart and read back; a replaced file is kept until the new one is in place.</p></div>
+        <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><p data-t="p3"><b>A recovery journal</b> for replacements, moves, renames and new folders. If anything is ambiguous, recovery is refused and what is found is preserved.</p></div>
+        <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><p data-t="p4"><b>Unsafe disks refused,</b> such as disks left by Windows hibernation or Fast Startup, with an explanation.</p></div>
+        <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><p data-t="p5"><b>System files protected:</b> <code>$MFT</code>, <code>System Volume Information</code>, links and encrypted files are never modified.</p></div>
+        <p class="note" data-t="note">An interruption, such as unplugging the disk during a copy, can still damage the filesystem: after it, run a Windows check. Keep a backup of important data.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap cols">
+      <div>
+        <h2 data-t="installTitle">Install</h2>
+        <p class="sub" data-t="installSub">Custodrive is not signed with an Apple Developer certificate, so macOS asks for confirmation the first time.</p>
+        <a class="btn primary" href="Custodrive.dmg" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+          <span data-t="download">Download for Mac</span>
+        </a>
+      </div>
+      <div>
+        <ol class="steps">
+          <li data-t="s1">Open <code>Custodrive.dmg</code> and drag <b>Custodrive</b> to <b>Applications</b>.</li>
+          <li data-t="s2">Open Custodrive. macOS says the developer cannot be verified: dismiss the alert.</li>
+          <li data-t="s3">Go to <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b> next to “Custodrive”. Needed only once per Mac.</li>
+        </ol>
+        <p class="meta" style="margin-top:16px" data-t="terminal">Or, in Terminal:</p>
+        <div class="terminal">xattr -dr com.apple.quarantine /Applications/Custodrive.app</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="requirements">
+    <div class="wrap cols">
+      <div>
+        <h2 data-t="reqTitle">Requirements and limits</h2>
+      </div>
+      <ul class="plain">
+        <li data-t="r1">Apple Silicon Mac (M1 or later), macOS 15.4 or later.</li>
+        <li data-t="r2">External NTFS disks and USB drives. Use Finder for APFS, exFAT and FAT.</li>
+        <li data-t="r3">Changes happen inside Custodrive: Finder keeps seeing the disk read-only.</li>
+        <li data-t="r4">Files are not edited in place on the disk: copy, replace or move them instead.</li>
+        <li data-t="r5">Compressed or encrypted NTFS files are not written.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div data-t="license">Free software under GPL-2.0-or-later. The copy engine is based on NTFS-3G by Tuxera.</div>
+    <div><a href="https://github.com/nicomil/custodrive" data-t="footSource">Source code</a> · <a href="https://github.com/nicomil/custodrive/releases" data-t="footReleases">All releases</a> · <a href="https://github.com/nicomil/custodrive/blob/main/LICENSE" data-t="footLicense">License</a></div>
+    <div class="hash"><span data-t="sha">SHA-256 of the download:</span> <code class="sha">…</code></div>
+  </div>
+</footer>
+
+<script>
+  // Update with every release (see docs/sviluppo.md).
+  const VERSION = "1.1.1";
+
+  const T = {
+    it: {
+      heroTitle: "Scrivi sui dischi Windows dal tuo Mac, con ogni copia verificata.",
+      heroLead: "Custodrive legge e scrive dischi NTFS e chiavette USB in una finestra simile al Finder. Ogni file viene riletto dal disco e confrontato con l'originale prima di comparire.",
+      download: "Scarica per Mac", source: "Codice sorgente", meta: "Versione", free: "gratuita e open source",
+      featuresTitle: "Tutto quello che serve su un disco NTFS",
+      featuresSub: "macOS legge l'NTFS ma non ci scrive. Custodrive aggiunge la metà mancante, senza driver né estensioni del kernel.",
+      f1t: "Sfoglia come nel Finder",
+      f1p: "Tutti i dischi esterni nella barra laterale, colonne ordinabili, percorso cliccabile, Indietro e Avanti, e Quick Look con la barra spaziatrice.",
+      f2t: "Copie verificate",
+      f2p: "Trascina file e cartelle intere dal Finder. Ogni file viene riletto e controllato con SHA-256 prima di ricevere il nome definitivo.",
+      f3t: "Organizza",
+      f3p: "Nuova cartella, rinomina direttamente nell'elenco, sposta trascinando o con ⌘X / ⌘V, ed elimina con conferma, perché l'NTFS non ha Cestino.",
+      f4t: "Copie grandi, sotto controllo",
+      f4p: "Lotti fino a 1000 file o 8 GB, una sola barra con velocità e tempo rimanente, una coda e un Annulla che lascia il disco pulito.",
+      f5t: "Una password per sessione",
+      f5p: "Avvii la modifica una volta: il disco resta riservato a Custodrive finché non termini, e ogni modifica viene ricontrollata.",
+      f6t: "Inglese, italiano, spagnolo",
+      f6p: "Scegli la lingua dal menu del globo nella barra. Puoi copiare sul disco anche dai Servizi del Finder o dall'icona nel Dock.",
+      screensTitle: "Uno sguardo da vicino",
+      screensSub: "In sola lettura finché non scegli di modificare, e sempre chiaro su quello che sta succedendo.",
+      c2: "Una cartella di foto, in sola lettura.",
+      c3: "Modifica attiva: il disco è riservato a Custodrive.",
+      c4: "Una copia grande, verificata rileggendola dal disco.",
+      c5: "L'eliminazione chiede sempre conferma.",
+      safetyTitle: "Come protegge i tuoi dati",
+      safetySub: "Misure per rilevare gli errori e limitare i danni, provate con interruzioni simulate e stacchi reali di chiavette USB.",
+      p1: "<b>Segnato «da controllare»</b> prima di ogni modifica, e liberato solo quando l'operazione è completa e verificata.",
+      p2: "<b>Niente viene sovrascritto sul posto.</b> I file nuovi vengono scritti a parte e riletti; un file sostituito resta finché il nuovo non è al suo posto.",
+      p3: "<b>Un registro di ripristino</b> per sostituzioni, spostamenti, rinomine e cartelle nuove. Se qualcosa è ambiguo, il ripristino viene rifiutato e ciò che c'è viene conservato.",
+      p4: "<b>Dischi a rischio rifiutati,</b> come quelli lasciati dall'ibernazione o dall'Avvio rapido di Windows, con una spiegazione.",
+      p5: "<b>File di sistema protetti:</b> <code>$MFT</code>, <code>System Volume Information</code>, collegamenti e file cifrati non vengono mai modificati.",
+      note: "Un'interruzione, per esempio staccare il disco durante una copia, può comunque danneggiare il filesystem: dopo, fai un controllo da Windows. Tieni una copia dei dati importanti.",
+      installTitle: "Installazione",
+      installSub: "Custodrive non è firmata con un certificato Apple Developer, quindi la prima volta macOS chiede conferma.",
+      s1: "Apri <code>Custodrive.dmg</code> e trascina <b>Custodrive</b> su <b>Applicazioni</b>.",
+      s2: "Apri Custodrive. macOS dice che lo sviluppatore non può essere verificato: chiudi l'avviso.",
+      s3: "Vai in <b>Impostazioni di Sistema → Privacy e sicurezza</b> e fai clic su <b>Apri comunque</b> accanto a «Custodrive». Serve una sola volta per Mac.",
+      terminal: "Oppure, nel Terminale:",
+      reqTitle: "Requisiti e limiti",
+      r1: "Mac con Apple Silicon (M1 o successivi), macOS 15.4 o successivo.",
+      r2: "Dischi esterni e chiavette USB NTFS. Per APFS, exFAT e FAT usa il Finder.",
+      r3: "Le modifiche avvengono dentro Custodrive: il Finder continua a vedere il disco in sola lettura.",
+      r4: "I file non si modificano direttamente sul disco: copiali, sostituiscili o spostali.",
+      r5: "I file NTFS compressi o cifrati non vengono scritti.",
+      license: "Software libero sotto GPL-2.0-or-later. Il motore di copia si basa su NTFS-3G di Tuxera.",
+      footSource: "Codice sorgente", footReleases: "Tutte le versioni", footLicense: "Licenza",
+      sha: "SHA-256 del download:",
+      title: "Custodrive — copie verificate su dischi NTFS dal Mac",
+      alt: "Custodrive: dischi a sinistra, contenuto del disco a destra"
+    },
+    es: {
+      heroTitle: "Escribe en discos de Windows desde tu Mac, con cada copia verificada.",
+      heroLead: "Custodrive lee y escribe discos NTFS y memorias USB en una ventana parecida al Finder. Cada archivo se vuelve a leer del disco y se compara con el original antes de aparecer.",
+      download: "Descargar para Mac", source: "Código fuente", meta: "Versión", free: "gratis y de código abierto",
+      featuresTitle: "Todo lo que necesitas en un disco NTFS",
+      featuresSub: "macOS lee NTFS pero no puede escribir en él. Custodrive añade la mitad que falta, sin controladores ni extensiones del kernel.",
+      f1t: "Navega como en el Finder",
+      f1p: "Todos los discos externos en la barra lateral, columnas ordenables, ruta con clic, Atrás y Adelante, y Vista rápida con la barra espaciadora.",
+      f2t: "Copias verificadas",
+      f2p: "Arrastra archivos y carpetas completas desde el Finder. Cada archivo se vuelve a leer y se comprueba con SHA-256 antes de recibir su nombre definitivo.",
+      f3t: "Organiza",
+      f3p: "Nueva carpeta, renombrar en la lista, mover arrastrando o con ⌘X / ⌘V, y eliminar con confirmación, porque NTFS no tiene Papelera.",
+      f4t: "Copias grandes, bajo control",
+      f4p: "Lotes de hasta 1000 archivos u 8 GB, una sola barra con velocidad y tiempo restante, una cola y un Cancelar que deja el disco limpio.",
+      f5t: "Una contraseña por sesión",
+      f5p: "Empiezas a editar una vez: el disco queda reservado para Custodrive hasta que terminas, y cada cambio se vuelve a comprobar.",
+      f6t: "Inglés, italiano, español",
+      f6p: "Elige el idioma en el menú del globo de la barra. También puedes copiar al disco desde los Servicios del Finder o el icono del Dock.",
+      screensTitle: "Un vistazo de cerca",
+      screensSub: "Solo lectura hasta que decides editar, y siempre claro sobre lo que está pasando.",
+      c2: "Una carpeta de fotos, en solo lectura.",
+      c3: "Edición activa: el disco está reservado para Custodrive.",
+      c4: "Una copia grande, verificada leyéndola de nuevo del disco.",
+      c5: "Eliminar siempre pide confirmación.",
+      safetyTitle: "Cómo protege tus datos",
+      safetySub: "Medidas para detectar errores y limitar daños, probadas con interrupciones simuladas y desconexiones reales de memorias USB.",
+      p1: "<b>Marcado «pendiente de revisión»</b> antes de cada cambio, y desmarcado solo cuando la operación está completa y verificada.",
+      p2: "<b>Nada se sobrescribe en su sitio.</b> Los archivos nuevos se escriben aparte y se vuelven a leer; un archivo sustituido se conserva hasta que el nuevo está en su lugar.",
+      p3: "<b>Un registro de recuperación</b> para sustituciones, movimientos, cambios de nombre y carpetas nuevas. Si algo es ambiguo, la recuperación se rechaza y se conserva lo encontrado.",
+      p4: "<b>Discos de riesgo rechazados,</b> como los que deja la hibernación o el Inicio rápido de Windows, con una explicación.",
+      p5: "<b>Archivos del sistema protegidos:</b> <code>$MFT</code>, <code>System Volume Information</code>, enlaces y archivos cifrados nunca se modifican.",
+      note: "Una interrupción, por ejemplo desconectar el disco durante una copia, aún puede dañar el sistema de archivos: después, haz una comprobación desde Windows. Guarda una copia de los datos importantes.",
+      installTitle: "Instalación",
+      installSub: "Custodrive no está firmado con un certificado Apple Developer, así que la primera vez macOS pide confirmación.",
+      s1: "Abre <code>Custodrive.dmg</code> y arrastra <b>Custodrive</b> a <b>Aplicaciones</b>.",
+      s2: "Abre Custodrive. macOS dice que no se puede verificar el desarrollador: cierra el aviso.",
+      s3: "Ve a <b>Ajustes del Sistema → Privacidad y seguridad</b> y haz clic en <b>Abrir igualmente</b> junto a «Custodrive». Solo una vez por Mac.",
+      terminal: "O bien, en Terminal:",
+      reqTitle: "Requisitos y límites",
+      r1: "Mac con Apple Silicon (M1 o posterior), macOS 15.4 o posterior.",
+      r2: "Discos externos y memorias USB NTFS. Para APFS, exFAT y FAT usa el Finder.",
+      r3: "Los cambios se hacen dentro de Custodrive: el Finder sigue viendo el disco en solo lectura.",
+      r4: "Los archivos no se editan directamente en el disco: cópialos, sustitúyelos o muévelos.",
+      r5: "Los archivos NTFS comprimidos o cifrados no se escriben.",
+      license: "Software libre bajo GPL-2.0-or-later. El motor de copia se basa en NTFS-3G de Tuxera.",
+      footSource: "Código fuente", footReleases: "Todas las versiones", footLicense: "Licencia",
+      sha: "SHA-256 de la descarga:",
+      title: "Custodrive — copias verificadas en discos NTFS desde el Mac",
+      alt: "Custodrive: discos a la izquierda, contenido del disco a la derecha"
+    }
+  };
+
+  // English lives in the HTML itself; remember it so switching back works.
+  const english = {};
+  document.querySelectorAll("[data-t]").forEach(el => { english[el.dataset.t] = el.innerHTML; });
+  english.title = document.title;
+  english.alt = document.querySelector('[data-shot="01-browser"]').alt;
+
+  function apply(lang) {
+    const strings = lang === "en" ? english : Object.assign({}, english, T[lang]);
+    document.documentElement.lang = lang;
+    document.querySelectorAll("[data-t]").forEach(el => { el.innerHTML = strings[el.dataset.t]; });
+    document.title = strings.title;
+    document.querySelectorAll("[data-shot]").forEach(img => {
+      img.src = "images/" + lang + "/" + img.dataset.shot + ".png";
+    });
+    document.querySelector('[data-shot="01-browser"]').alt = strings.alt;
+    document.querySelectorAll(".lang button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
+    try { localStorage.setItem("custodrive-lang", lang); } catch (e) {}
+  }
+
+  function initial() {
+    const query = new URLSearchParams(location.search).get("lang");
+    if (query && (query === "en" || T[query])) return query;
+    try {
+      const saved = localStorage.getItem("custodrive-lang");
+      if (saved && (saved === "en" || T[saved])) return saved;
+    } catch (e) {}
+    const browser = (navigator.language || "en").slice(0, 2).toLowerCase();
+    return T[browser] ? browser : "en";
+  }
+
+  document.querySelectorAll(".version").forEach(el => { el.textContent = VERSION; });
+  document.querySelectorAll(".lang button").forEach(b => b.addEventListener("click", () => apply(b.dataset.lang)));
+  apply(initial());
+
+  fetch("Custodrive.dmg.sha256").then(r => r.ok ? r.text() : "").then(text => {
+    const hash = text.trim().split(/\s+/)[0];
+    if (hash) document.querySelector(".sha").textContent = hash;
+  }).catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+# Publishes the website (site/) on GitHub Pages, together with the README
+# screenshots and the current dmg from dist/, on every push to main.
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths: [site/**, dist/**, docs/images/**, .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/images
+          cp site/index.html _site/
+          cp docs/images/icon.png _site/images/
+          cp -R docs/images/en docs/images/it docs/images/es _site/images/
+          cp dist/Custodrive.dmg dist/Custodrive.dmg.sha256 _site/
+          (cd _site && sha256sum -c Custodrive.dmg.sha256)
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
