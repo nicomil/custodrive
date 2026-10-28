@@ -5,7 +5,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OPENHDD_TESTING=1 "$root/Scripts/build-copy-tool.sh"
 build=${TMPDIR:-/tmp}/open-hdd-bridge-test
-if [ ! -x "$build/ntfsprogs/ntfscp" ]; then
+if [ ! -x "$build/ntfsprogs/ntfsls" ]; then
   "$root/Tests/run-offline-write-probe.sh" >/dev/null
 fi
 PYTHONPATH="$root/Tests" python3 - "$root/Build/OpenHDDCopyTest" "$build/ntfsprogs" <<'PY'
@@ -235,7 +235,62 @@ with tempfile.TemporaryDirectory(prefix='openhdd-recovery-') as directory:
         copy(image, *args, code=1)
         assert hash_file(image) == before, args
 
+    # An interrupted folder copy leaves no empty destination folders behind
+    # (journal version 3), but never removes a folder that holds anything.
+    def manifest(path, *records):
+        path.write_bytes(b''.join(str(field).encode() + b'\0' for record in records
+                                  for field in record))
+        return path
+    tree = manifest(work / 'tree.manifest', ('D', 'Nuova'), ('D', 'Nuova/Sotto'),
+                    ('D', 'Foto'), ('F', old, 'Nuova/Sotto', 'a.txt', '0'),
+                    ('F', new, 'Foto', 'b.txt', '0'))
+    def exists(image, folder, name):
+        listing = run(progs / 'ntfsls', '-f', image, '-p', '/' + folder).stdout
+        return name.encode() in listing.split()
+    for stage, removed in (('3', True), ('4', True), ('5', False)):
+        image = fresh('folder-copy-stage' + stage)
+        copy(image, '--manifest', tree, code=86, env={'OPENHDD_TEST_ABORT_AT_STAGE': stage})
+        if removed:
+            assert read(image, '/.OpenHDD-journal').startswith(b'OpenHDD-Journal\t3\t')
+        repair(image)
+        copy(image, '--mkdir', '', 'After')
+        clean(image)
+        assert exists(image, '', 'Nuova') != removed, stage
+        assert exists(image, '', 'Foto'), stage  # existed before: never journaled
+        assert exists(image, 'Parent', 'Foto'), stage
+        assert read(image, '/Foto/inside.bin') == old.read_bytes()
+        if not removed:
+            assert read(image, '/Nuova/Sotto/a.txt') == old.read_bytes()
+    # Someone put a file in the new folder before recovery: everything stays.
+    image = fresh('folder-copy-occupied')
+    copy(image, '--manifest', tree, code=86, env={'OPENHDD_TEST_ABORT_AT_STAGE': '3'})
+    repair(image)
+    run(progs / 'ntfscp', image, new, '/Nuova/Sotto/user.txt')
+    copy(image, '--mkdir', '', 'After')
+    clean(image)
+    assert read(image, '/Nuova/Sotto/user.txt') == new.read_bytes()
+    # A version 3 journal accepts folder records only, bound to an identity.
+    for data in (b'R\t\tx\ty\n', b'D\t\tNuova\n', b'D\t\tNuova\t0000000000000000\n'):
+        image = fresh('folder-journal-invalid')
+        put_journal(image, b'OpenHDD-Journal\t3\t' + hashlib.sha256(data).hexdigest().encode()
+                    + b'\n' + data)
+        refused_unchanged(image)
+    # The same folder listed twice is refused before any write.
+    image = fresh('folder-journal-duplicate')
+    copy(image, '--manifest', tree, code=86, env={'OPENHDD_TEST_ABORT_AT_STAGE': '3'})
+    repair(image)
+    text = read(image, '/.OpenHDD-journal').split(b'\n', 1)[1]
+    data = text + text.splitlines(keepends=True)[0]
+    put_journal(image, b'OpenHDD-Journal\t3\t' + hashlib.sha256(data).hexdigest().encode()
+                + b'\n' + data)
+    refused_unchanged(image)
+    # Version 2 must not carry folder records.
+    image = fresh('folder-journal-v2')
+    put_journal(image, versioned(b'D\t\tFoto\t0001000000000040\n'))
+    refused_unchanged(image)
+
 print('PASS: untrusted journals refused without writes; directory recovery and repeated recovery;')
+print('interrupted folder copies leave no empty folders, occupied folders kept;')
 print('legacy ambiguity preserved; replacement digest checked; folder names and system paths protected.')
 print('Image-only regressions: Windows/chkdsk and physical power loss remain unverified here.')
 PY

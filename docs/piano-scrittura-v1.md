@@ -303,6 +303,21 @@ maiuscole; le sostituzioni usano `R`. Dopo `chkdsk`, la sessione successiva:
 I temporanei già sistemati dal diario non vengono cancellati una seconda
 volta.
 
+**Diario delle cartelle create (versione 3, 28 ottobre 2026).** Una copia che
+crea cartelle nuove scrive, subito dopo averle create, un diario con
+intestazione `OpenHDD-Journal\t3` e una riga `D` (cartella madre, nome,
+riferimento MFT) per ciascuna, madri prima. Il diario viene riletto come gli
+altri e tolto prima della pubblicazione del primo file: da lì in poi le
+cartelle fanno parte del risultato. Dopo un'interruzione e `chkdsk`, il
+ripristino toglie, dalle più profonde, solo le cartelle che hanno ancora lo
+stesso riferimento MFT e sono vuote (contando come vuote quelle che
+contengono solo altre cartelle del diario già pianificate). Una cartella
+sparita, rinominata, sostituita o non vuota resta com'è e non blocca il
+ripristino: lasciarla non mette a rischio dati. Il diario v3 contiene solo
+righe `D`; il v2 non le accetta. Oltre 4096 cartelle il diario non viene
+scritto e le cartelle restano come prima della v3. Le build fino alla 1.1.0
+rifiutano un diario v3 senza modificare nulla.
+
 **Velocità con cartelle grandi.** I nomi di una cartella vengono letti una
 sola volta: chiavi UTF-16 in maiuscolo con la tabella upcase del volume, la
 stessa regola di NTFS, ordinate per una ricerca binaria. Prima si rileggeva

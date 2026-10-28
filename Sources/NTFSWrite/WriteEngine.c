@@ -1273,7 +1273,8 @@ static int create_directories(Target *target, const char *const *directories,
 /* The recovery journal: one line per replacement, "folder TAB old-name TAB
    final-name". Written and read back before the first old file is renamed,
    removed only after every old file is gone. */
-static int write_journal_text(Target *target, const char *text, size_t length);
+static int write_journal_text(Target *target, int version, const char *text,
+                              size_t length);
 
 static int write_journal(Target *target, const OHCopyItem *items,
                          const Staged *staged, size_t count)
@@ -1300,14 +1301,15 @@ static int write_journal(Target *target, const OHCopyItem *items,
                                      (unsigned long long)staged[i].old_reference,
                                      (unsigned long long)staged[i].reference, digest);
         }
-    int result = write_journal_text(target, text, used);
+    int result = write_journal_text(target, 2, text, used);
     free(text);
     return result;
 }
 
 /* The journal is written and read back before the first change it
    describes, in its own mount. */
-static int write_journal_text(Target *target, const char *text, size_t length)
+static int write_journal_text(Target *target, int version, const char *text,
+                              size_t length)
 {
     /* Integrity check, not authentication: the whole on-disk file remains
        untrusted and recovery validates every record and its target. */
@@ -1316,7 +1318,8 @@ static int write_journal_text(Target *target, const char *text, size_t length)
     if (!CC_SHA256(text, (CC_LONG)length, digest)) return -1;
     for (size_t i = 0; i < sizeof(digest); ++i)
         snprintf(hex + 2 * i, 3, "%02x", digest[i]);
-    int header_length = snprintf(header, sizeof(header), "OpenHDD-Journal\t2\t%s\n", hex);
+    int header_length = snprintf(header, sizeof(header), "OpenHDD-Journal\t%d\t%s\n",
+                                 version, hex);
     if (length > MAX_JOURNAL - (size_t)header_length) { errno = EFBIG; return -1; }
     int result = -1;
     ntfs_volume *volume = mount_rw(target);
@@ -1361,6 +1364,51 @@ static int write_journal_text(Target *target, const char *text, size_t length)
     free(check);
     if (status || target->io_failed) { errno = target->io_failed ? EIO : status; return -1; }
     return 0;
+}
+
+/* Version 3 journal, written right after stage 2 created new folders and
+   removed before anything is published: one line per folder, "D TAB parent
+   TAB name TAB MFT reference", parents first. Recovery removes a listed
+   folder only while it keeps that identity and is empty, so an interrupted
+   copy leaves no empty destination behind and no data is ever at stake.
+   Returns 1 when written, 0 when there are too many folders to journal
+   (then they stay, as before version 3), -1 on failure. */
+static int write_folder_journal(Target *target, const char *const *directories,
+                                const unsigned char *missing, size_t count)
+{
+    size_t lines = 0, length = 0;
+    for (size_t i = 0; i < count; ++i)
+        if (missing[i]) {
+            ++lines;
+            length += strlen(directories[i]) + 24; /* type, tabs, reference */
+        }
+    if (!lines || lines > MAX_ITEMS || length > MAX_JOURNAL - 96) return 0;
+    char *text = malloc(length + 1);
+    OHNTFSVolume *view = NULL;
+    uint32_t warnings = 0;
+    int status = text ? readonly_open(target, &view, &warnings) : ENOMEM;
+    if (!status && warnings) status = EBUSY;
+    size_t used = 0;
+    for (size_t i = 0; i < count && !status; ++i) {
+        if (!missing[i]) continue;
+        char parent[4097];
+        const char *leaf = NULL;
+        uint64_t parent_inode = 0;
+        OHNTFSItem item;
+        status = split_path(directories[i], parent, sizeof(parent), &leaf) ? EINVAL :
+            resolve_plain_directory(view, parent, &parent_inode);
+        if (!status) status = oh_ntfs_lookup(view, parent_inode, leaf, &item);
+        if (!status && (item.kind != 2 || item.special)) status = EIO;
+        if (!status)
+            used += (size_t)snprintf(text + used, length + 1 - used, "D\t%s\t%s\t%016llx\n",
+                                     parent, leaf, (unsigned long long)item.reference);
+    }
+    if (view) oh_ntfs_close(view);
+    if (!status && target->io_failed) status = EIO;
+    int result = status ? -1 : write_journal_text(target, 3, text, used);
+    free(text);
+    if (status) { errno = status; return -1; }
+    return result ? -1 : 1;
 }
 
 static int remove_journal(Target *target)
@@ -1580,7 +1628,9 @@ typedef struct {
     const char *folder[2], *name[2];
     uint64_t reference[2]; /* zero only for legacy journals */
     const char *digest; /* expected new-file SHA-256 for a replacement */
-    int action; /* 0: already settled/undone, 1: drop first name, 2: restore it */
+    int action; /* 0: already settled/undone, 1: drop first name, 2: restore it,
+                   3: remove an empty folder the interrupted copy created */
+    uint64_t inode; /* folder records: the folder's record while it is a candidate */
 } RecoveryEntry;
 
 /* Diagnostic only: paths are expectations, never a claim that data was found.
@@ -1626,8 +1676,10 @@ static int recovery_reference(const char *value, uint64_t *reference)
    Legacy records remain readable, but ambiguous replacements are refused. */
 static int parse_journal(char *text, RecoveryEntry *entries, size_t *count)
 {
-    const char prefix[] = "OpenHDD-Journal\t2\t";
+    char prefix[] = "OpenHDD-Journal\t2\t";
+    if (!strncmp(text, "OpenHDD-Journal\t3\t", sizeof(prefix) - 1)) prefix[16] = '3';
     int versioned = !strncmp(text, prefix, sizeof(prefix) - 1);
+    int folders = versioned && prefix[16] == '3';
     if (!versioned && !strncmp(text, "OpenHDD-Journal", 15))
         return recovery_failure(ENOTSUP, "unsupported-version", 0, NULL);
     if (versioned) {
@@ -1657,6 +1709,20 @@ static int parse_journal(char *text, RecoveryEntry *entries, size_t *count)
         }
         if (strlen(fields[0]) != 1) return EINVAL;
         char type = fields[0][0];
+        if (folders != (type == 'D')) return EINVAL; /* D only, and only in v3 */
+        if (type == 'D') {
+            if (n != 4) return EINVAL;
+            RecoveryEntry *entry = &entries[(*count)++];
+            entry->type = type;
+            entry->folder[0] = entry->folder[1] = fields[1];
+            entry->name[0] = entry->name[1] = fields[2];
+            if (!recovery_directory(fields[1]) || !oh_ntfs_valid_new_name(fields[2]) ||
+                (!*fields[1] && protected_path(fields[2])))
+                return EPERM;
+            if (recovery_reference(fields[3], &entry->reference[0])) return EINVAL;
+            entry->reference[1] = entry->reference[0];
+            continue;
+        }
         size_t expected = type == 'L' ? 5 : 4;
         if (type != 'L' && type != 'R' && type != 'C') return EINVAL;
         if (versioned) expected += type == 'R' ? 3 : 1;
@@ -1733,6 +1799,57 @@ static int verify_recovered_file(OHNTFSVolume *view, const OHNTFSItem *item,
     return status;
 }
 
+typedef struct {
+    const RecoveryEntry *entries;
+    size_t count;
+    int occupied;
+} FolderChildren;
+
+/* A child keeps its folder unless it is itself a listed folder already
+   planned for removal (deeper folders are planned first). */
+static int count_folder_child(void *opaque, const char *name, const OHNTFSItem *item)
+{
+    (void)name;
+    FolderChildren *children = opaque;
+    int removable = 0;
+    for (size_t i = 0; i < children->count && !removable; ++i)
+        removable = children->entries[i].action == 3 &&
+            children->entries[i].inode == item->inode;
+    if (!removable) children->occupied = 1;
+    return 0;
+}
+
+/* Folder records never block recovery: a folder that is gone, renamed,
+   replaced by another record or no longer empty is simply left as it is.
+   Only an empty folder with the recorded identity is removed. */
+static int plan_folder_recovery(OHNTFSVolume *view, RecoveryEntry *entries, size_t count)
+{
+    for (size_t i = count; i-- > 0; ) {
+        RecoveryEntry *entry = &entries[i];
+        entry->action = 0;
+        uint64_t parent = 0;
+        OHNTFSItem item;
+        int status = resolve_plain_directory(view, entry->folder[0], &parent);
+        if (status == ENOENT || status == ENOTDIR || status == ENOTSUP) continue;
+        if (!status) status = oh_ntfs_lookup(view, parent, entry->name[0], &item);
+        if (status == ENOENT) continue;
+        if (status) return recovery_failure(status, "entry-unreadable", i + 1, entry);
+        if (item.kind != 2 || item.special || item.inode < FILE_first_user ||
+            item.reference != entry->reference[0]) continue;
+        /* The engine never lists a folder twice: a repeated record is a
+           damaged or forged journal, refused before any write. */
+        for (size_t j = 0; j < count; ++j)
+            if (j != i && entries[j].reference[0] == entry->reference[0])
+                return recovery_failure(EPERM, "overlapping-names", i + 1, entry);
+        FolderChildren children = { .entries = entries, .count = count };
+        if (oh_ntfs_list(view, item.inode, count_folder_child, &children) ||
+            children.occupied) continue;
+        entry->inode = item.inode;
+        entry->action = 3;
+    }
+    return 0;
+}
+
 /* Resolve all paths in a read-only view, distinguishing absence from I/O
    errors. No action may remove the last name, target a reused record, or
    overlap another record's names (including NTFS case aliases). */
@@ -1744,9 +1861,11 @@ static int plan_recovery(Target *target, RecoveryEntry *entries, size_t count,
     int status = readonly_open(target, &view, &warnings);
     if (status) return status;
     if (warnings) status = EBUSY;
-    RecoveryName *names = calloc(2 * count + 1, sizeof(*names));
-    if (!names) status = ENOMEM;
-    for (size_t i = 0; i < count && !status; ++i) {
+    int folders = count && entries[0].type == 'D'; /* version 3: folders only */
+    if (!status && folders) status = plan_folder_recovery(view, entries, count);
+    RecoveryName *names = folders ? NULL : calloc(2 * count + 1, sizeof(*names));
+    if (!folders && !names) status = ENOMEM;
+    for (size_t i = 0; i < count && !status && !folders; ++i) {
         RecoveryEntry *entry = &entries[i];
         OHNTFSItem items[2] = { 0 };
         int present[2] = { 0 };
@@ -1804,7 +1923,7 @@ static int plan_recovery(Target *target, RecoveryEntry *entries, size_t count,
                     pending->entries[j].journaled = 1;
         }
     }
-    if (!status) {
+    if (!status && !folders) {
         qsort(names, 2 * count, sizeof(*names), compare_recovery_names);
         for (size_t i = 1; i < 2 * count; ++i)
             if (!compare_recovery_names(&names[i - 1], &names[i])) {
@@ -1823,9 +1942,12 @@ static int plan_recovery(Target *target, RecoveryEntry *entries, size_t count,
 
 static int apply_journal(ntfs_volume *volume, const RecoveryEntry *entries, size_t count)
 {
-    for (size_t i = 0; i < count; ++i) {
-        const RecoveryEntry *entry = &entries[i];
-        int result = entry->action == 1 ? unlink_name(volume, entry->folder[0], entry->name[0]) :
+    int folders = count && entries[0].type == 'D';
+    for (size_t n = 0; n < count; ++n) {
+        /* Folders are listed parents first and removed children first. */
+        const RecoveryEntry *entry = &entries[folders ? count - 1 - n : n];
+        int result = entry->action == 1 || entry->action == 3 ?
+            unlink_name(volume, entry->folder[0], entry->name[0]) :
             entry->action == 2 ? rename_entry(volume, entry->folder[0], entry->name[0], entry->name[1], NULL) : 0;
         if (result) return -1;
         #ifdef OPENHDD_TESTING
@@ -2218,6 +2340,9 @@ int oh_copy_files(int target_fd, uint64_t target_size, int is_device,
         status = phase_error(&target);
         goto out;
     }
+    int folder_journal = creating ?
+        write_folder_journal(&target, directories, missing, directory_count) : 0;
+    if (folder_journal < 0) { status = phase_error(&target); goto out; }
     if (count && write_all(&target, items, sources, staged, count, buffer, &work,
                            failed_index)) {
         status = phase_error(&target);
@@ -2249,6 +2374,12 @@ cancelled:
     abort_at_stage(4);
     if (getenv("OPENHDD_TEST_FAIL_BEFORE_PUBLISH")) { status = EIO; goto out; }
     #endif
+    /* From here on the new folders belong to the result: drop their
+       journal before the replacement journal or the first publication. */
+    if (folder_journal > 0 && remove_journal(&target)) {
+        status = phase_error(&target);
+        goto out;
+    }
     if (replacing && write_journal(&target, items, staged, count)) {
         status = phase_error(&target);
         goto out;
@@ -2803,7 +2934,7 @@ static int write_edit_journal(Target *target, const OHEdit *edits, EditPlan *pla
                                          (unsigned long long)plan->reference);
         }
     }
-    int result = write_journal_text(target, text, used);
+    int result = write_journal_text(target, 2, text, used);
     free(text);
     if (result) return phase_error(target);
     *journaled = 1;

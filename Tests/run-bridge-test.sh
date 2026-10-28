@@ -9,7 +9,7 @@ if [ ! -f "$build/Makefile" ]; then
     --enable-static --disable-shared > configure.log)
 fi
 make -C "$build/libntfs-3g" -j4 > "$build/make.log"
-make -C "$build/ntfsprogs" mkntfs ntfscp ntfsfix -j4 > "$build/tools.log"
+make -C "$build/ntfsprogs" mkntfs ntfscp ntfsfix ntfscat ntfsls -j4 > "$build/tools.log"
 cc -std=c11 -Wall -Wextra -Werror \
   -I "$root/Sources/NTFSBridge/include" \
   -I "$root/vendor/ntfs-3g-2026.7.7/include" -I "$build" \
