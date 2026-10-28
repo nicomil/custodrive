@@ -15,6 +15,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/nicomil/custodrive/raw/main/dist/Custodrive.dmg"><b>Download Custodrive 1.1.1</b></a> (.dmg, 1.4 MB) ·
+  <a href="https://nicomil.github.io/custodrive/">Website</a> ·
+  <a href="https://github.com/nicomil/custodrive/releases">All releases</a>
+</p>
+
+<p align="center">
   <b>English</b> · <a href="README.it.md">Italiano</a> · <a href="README.es.md">Español</a>
 </p>
 
@@ -30,7 +36,7 @@ there will be no data loss. Keep a backup of important data.
 The interface supports **English (default), Italian and Spanish**. Use the
 **Language** menu (globe icon) in the toolbar, or **Custodrive → Settings…**,
 then restart the app to apply your choice. Existing edit sessions and copies
-continue normally. Screenshots below show the Italian interface.
+continue normally.
 
 <p align="center">
   <img src="docs/images/en/01-browser.png" width="780" alt="Custodrive: disks on the left, disk contents on the right">
@@ -51,7 +57,8 @@ continue normally. Screenshots below show the Italian interface.
 
 ### 1. Install
 
-1. Open `Custodrive-1.1.1.dmg` and drag **Custodrive** to **Applications**.
+1. [Download `Custodrive.dmg`](https://github.com/nicomil/custodrive/raw/main/dist/Custodrive.dmg), open it and drag **Custodrive** to
+   **Applications**.
 2. Open Custodrive from Applications.
 
 **The first time on a new Mac**, macOS blocks it with “the developer cannot

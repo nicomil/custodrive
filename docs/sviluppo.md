@@ -18,6 +18,14 @@ Apple necessario) e **OpenHDD** (variante FSKit, sotto). I nomi interni
 `OpenHDD*` e i temporanei su disco `.OpenHDD-*` restano invariati: fanno
 parte del formato che il recupero riconosce.
 
+**Pubblicare una versione.** Il pacchetto si crea da un albero pulito, così
+`Source.txt` nel dmg indica la revisione esatta. Poi: tag `vVERSIONE`,
+release su GitHub con il dmg e il suo `.sha256`, e copia dello stesso dmg in
+`dist/Custodrive.dmg` (con `dist/Custodrive.dmg.sha256`). Quel nome resta
+fisso: i link dei README e il sito puntano lì. Il sito (`site/`) viene
+pubblicato su GitHub Pages dall'azione `.github/workflows/pages.yml` a ogni
+push su `main` e serve il dmg dalla stessa cartella `dist/`.
+
 ## Test automatici
 
 | Script | Cosa verifica |

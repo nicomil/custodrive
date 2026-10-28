@@ -15,6 +15,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/nicomil/custodrive/raw/main/dist/Custodrive.dmg"><b>Descargar Custodrive 1.1.1</b></a> (.dmg, 1,4 MB) ·
+  <a href="https://nicomil.github.io/custodrive/">Sitio web</a> ·
+  <a href="https://github.com/nicomil/custodrive/releases">Todas las versiones</a>
+</p>
+
+<p align="center">
   <a href="README.md">English</a> · <a href="README.it.md">Italiano</a> · <b>Español</b>
 </p>
 
@@ -30,8 +36,7 @@ pero no garantizan que no haya pérdidas. Conserva una copia de los datos import
 La interfaz admite **inglés (predeterminado), italiano y español**. Usa el
 menú **Idioma** (icono del globo) de la barra de herramientas o **Custodrive →
 Ajustes…**, y reinicia la aplicación para aplicar tu elección. Las sesiones
-de edición y las copias en curso continúan normalmente. Las capturas muestran
-la interfaz en italiano.
+de edición y las copias en curso continúan normalmente.
 
 <p align="center">
   <img src="docs/images/es/01-browser.png" width="780" alt="Custodrive: discos a la izquierda, contenido a la derecha">
@@ -52,7 +57,8 @@ la interfaz en italiano.
 
 ### 1. Instalar
 
-1. Abre `Custodrive-1.1.1.dmg` y arrastra **Custodrive** a **Aplicaciones**.
+1. [Descarga `Custodrive.dmg`](https://github.com/nicomil/custodrive/raw/main/dist/Custodrive.dmg), ábrelo y arrastra **Custodrive** a
+   **Aplicaciones**.
 2. Abre Custodrive desde Aplicaciones.
 
 **La primera vez en un Mac nuevo**, macOS la bloquea porque «no se puede
