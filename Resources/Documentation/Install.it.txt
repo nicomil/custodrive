@@ -29,3 +29,7 @@ danneggiare il filesystem. Conserva una copia dei dati importanti.
 LINGUA
 Scegli English, Italiano o Español nel menu Lingua della barra (icona del
 globo), oppure in Custodrive → Impostazioni. Riavvia per applicare la scelta.
+
+LICENZA
+Custodrive è software libero sotto GPL-2.0-or-later, senza garanzia.
+Vedi License.txt; Source.txt indica dove trovare il codice sorgente.

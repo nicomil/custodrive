@@ -9,9 +9,10 @@
 - Licencia: GPL-2.0-or-later para libntfs-3g (véase `ntfs-3g-2026.7.7/COPYING`); algunos componentes usan LGPL-2.0-or-later (véase `COPYING.LIB`).
 
 El código fuente original se incluye sin modificaciones locales. La compilación
-usa una carpeta separada. La aplicación es para uso personal; cualquier
-distribución requiere una revisión independiente de las licencias y el
-cumplimiento de las obligaciones GPL.
+usa una carpeta separada. Custodrive enlaza libntfs-3g en su
+motor de copia y se distribuye en conjunto bajo GPL-2.0-or-later (ver
+`LICENSE` en la raíz del repositorio); cada versión indica la revisión del
+código fuente con la que se compiló.
 
 El adaptador C llama a `ntfs_device_mount` con `NTFS_MNT_RDONLY | NTFS_MNT_FORENSIC`.
 Sus callbacks de escritura y pwrite devuelven siempre `EROFS` y cuentan los

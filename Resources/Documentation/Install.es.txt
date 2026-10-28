@@ -29,3 +29,7 @@ sistema de archivos. Conserva una copia de los datos importantes.
 IDIOMA
 Elige English, Italiano o Español en el menú Idioma de la barra (icono del
 globo) o en Custodrive → Ajustes. Reinicia para aplicar tu elección.
+
+LICENCIA
+Custodrive es software libre bajo GPL-2.0-or-later, sin garantía.
+Ver License.txt; Source.txt indica dónde encontrar el código fuente.

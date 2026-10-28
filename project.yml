@@ -38,8 +38,8 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: "Custodrive — verified copies for external disks"
         CFBundleLocalizations: [en, it, es]
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.1.0"
+        CFBundleVersion: "2"
         LSMinimumSystemVersion: "15.4"
         # Files dropped on the Dock icon are offered for copying.
         CFBundleDocumentTypes:

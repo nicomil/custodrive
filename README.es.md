@@ -52,7 +52,7 @@ la interfaz en italiano.
 
 ### 1. Instalar
 
-1. Abre `Custodrive-1.0.0.dmg` y arrastra **Custodrive** a **Aplicaciones**.
+1. Abre `Custodrive-1.1.0.dmg` y arrastra **Custodrive** a **Aplicaciones**.
 2. Abre Custodrive desde Aplicaciones.
 
 **La primera vez en un Mac nuevo**, macOS la bloquea porque «no se puede
@@ -256,7 +256,7 @@ Próximas funciones previstas:
 
 ```sh
 Scripts/build-local-app.sh    # compila Build/Custodrive.app
-Scripts/package-app.sh        # crea Build/Custodrive-1.0.0.dmg para compartir
+Scripts/package-app.sh        # crea Build/Custodrive-1.1.0.dmg para compartir
 sh Tests/run-localization-test.sh  # verifica los tres catálogos de idiomas
 ```
 
@@ -269,3 +269,12 @@ El inglés es el idioma predeterminado y de respaldo. `CustodriveLanguage`
 guarda la elección; un reinicio la aplica a SwiftUI y a los diálogos de
 AppKit. Los diagnósticos técnicos, rutas y nombres de archivos conservan
 sus valores originales.
+
+## Licencia
+
+Custodrive es software libre, distribuido bajo la
+[GNU General Public License, versión 2 o (a tu elección) cualquier versión posterior](LICENSE)
+(GPL-2.0-or-later). Su motor de copia usa [NTFS-3G](vendor/README.es.md) de
+Tuxera, con la misma licencia; el código fuente original de NTFS-3G está en
+`vendor/`. Custodrive se ofrece sin ninguna garantía: guarda una copia de
+los datos importantes.

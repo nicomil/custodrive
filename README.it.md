@@ -52,7 +52,7 @@ l’interfaccia italiana.
 
 ### 1. Installa
 
-1. Apri `Custodrive-1.0.0.dmg` e trascina **Custodrive** sulla cartella
+1. Apri `Custodrive-1.1.0.dmg` e trascina **Custodrive** sulla cartella
    **Applicazioni**.
 2. Apri Custodrive dalla cartella Applicazioni.
 
@@ -251,7 +251,7 @@ verso NTFS. Prossime funzioni previste:
 
 ```sh
 Scripts/build-local-app.sh    # compila Build/Custodrive.app
-Scripts/package-app.sh        # crea Build/Custodrive-1.0.0.dmg da condividere
+Scripts/package-app.sh        # crea Build/Custodrive-1.1.0.dmg da condividere
 sh Tests/run-localization-test.sh  # verifica i tre cataloghi lingua
 ```
 
@@ -263,3 +263,12 @@ I testi UI sono in `Resources/Localization/{en,it,es}.lproj`. Inglese
 predefinito e di riserva. `CustodriveLanguage` salva la scelta; il riavvio
 la applica a SwiftUI e ai dialoghi AppKit. Diagnostica tecnica, percorsi e
 nomi dei file conservano i valori originali.
+
+## Licenza
+
+Custodrive è software libero, distribuito sotto la
+[GNU General Public License, versione 2 o (a tua scelta) qualunque versione successiva](LICENSE)
+(GPL-2.0-or-later). Il motore di copia usa [NTFS-3G](vendor/README.it.md) di
+Tuxera, con la stessa licenza; i sorgenti originali di NTFS-3G sono in
+`vendor/`. Custodrive è fornito senza alcuna garanzia: tieni una copia dei
+dati importanti.

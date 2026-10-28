@@ -29,3 +29,7 @@ filesystem damage. Keep a backup of important data.
 LANGUAGE
 Choose English, Italiano or Español from the toolbar’s Language menu
 (globe icon), or Custodrive → Settings. Restart to apply the choice.
+
+LICENSE
+Custodrive is free software under GPL-2.0-or-later, with no warranty.
+See License.txt; Source.txt says where to find the source code.
