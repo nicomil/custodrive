@@ -52,7 +52,7 @@ l’interfaccia italiana.
 
 ### 1. Installa
 
-1. Apri `Custodrive-1.1.0.dmg` e trascina **Custodrive** sulla cartella
+1. Apri `Custodrive-1.1.1.dmg` e trascina **Custodrive** sulla cartella
    **Applicazioni**.
 2. Apri Custodrive dalla cartella Applicazioni.
 
@@ -253,7 +253,7 @@ verso NTFS. Prossime funzioni previste:
 
 ```sh
 Scripts/build-local-app.sh    # compila Build/Custodrive.app
-Scripts/package-app.sh        # crea Build/Custodrive-1.1.0.dmg da condividere
+Scripts/package-app.sh        # crea Build/Custodrive-1.1.1.dmg da condividere
 sh Tests/run-localization-test.sh  # verifica i tre cataloghi lingua
 ```
 

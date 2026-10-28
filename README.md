@@ -51,7 +51,7 @@ continue normally. Screenshots below show the Italian interface.
 
 ### 1. Install
 
-1. Open `Custodrive-1.1.0.dmg` and drag **Custodrive** to **Applications**.
+1. Open `Custodrive-1.1.1.dmg` and drag **Custodrive** to **Applications**.
 2. Open Custodrive from Applications.
 
 **The first time on a new Mac**, macOS blocks it with “the developer cannot
@@ -250,7 +250,7 @@ Planned features:
 
 ```sh
 Scripts/build-local-app.sh    # builds Build/Custodrive.app
-Scripts/package-app.sh        # creates Build/Custodrive-1.1.0.dmg for sharing
+Scripts/package-app.sh        # creates Build/Custodrive-1.1.1.dmg for sharing
 sh Tests/run-localization-test.sh  # verifies the three shipped language catalogs
 ```
 

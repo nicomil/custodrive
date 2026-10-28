@@ -52,7 +52,7 @@ la interfaz en italiano.
 
 ### 1. Instalar
 
-1. Abre `Custodrive-1.1.0.dmg` y arrastra **Custodrive** a **Aplicaciones**.
+1. Abre `Custodrive-1.1.1.dmg` y arrastra **Custodrive** a **Aplicaciones**.
 2. Abre Custodrive desde Aplicaciones.
 
 **La primera vez en un Mac nuevo**, macOS la bloquea porque «no se puede
@@ -259,7 +259,7 @@ Próximas funciones previstas:
 
 ```sh
 Scripts/build-local-app.sh    # compila Build/Custodrive.app
-Scripts/package-app.sh        # crea Build/Custodrive-1.1.0.dmg para compartir
+Scripts/package-app.sh        # crea Build/Custodrive-1.1.1.dmg para compartir
 sh Tests/run-localization-test.sh  # verifica los tres catálogos de idiomas
 ```
 
