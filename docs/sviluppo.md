@@ -184,13 +184,56 @@ dei 12 rifiuti per far passare il gate.
 Restano separati i limiti del filesystem dal recupero applicativo, le prove
 hardware USB e il secondo Mac. Nessuna prova fisica svolta in questa campagna.
 
+## Collaudo su chiavetta reale con diario v2 — 28 ottobre 2026
+
+Prova fisica eseguita da remoto: il Mac era fuori casa e il minipc Windows
+raggiunto via WireGuard (~2 MB/s). Per contenere i trasferimenti, Windows ha
+creato con `diskpart` un VHD fisso da 320 MB (MBR, una partizione NTFS
+formattata da Windows); il suo contenuto grezzo è stato scritto all'inizio di
+una chiavetta sacrificabile (Kingston DataTraveler G3, 16 GB). Ogni giro:
+scollegamento fisico durante l'operazione, copia dei primi 320 MB della
+chiavetta in un VHD, `chkdsk /f` su Windows su una copia privata, riscrittura
+del VHD riparato sulla chiavetta con rilettura e confronto SHA-256, ripresa
+nell'app Custodrive (build `0934112`), verifica degli hash dal Mac.
+
+| Prova | Operazione interrotta | Stato dopo lo stacco | Windows | Ripresa sul Mac |
+|---|---|---|---|---|
+| 1 | sostituzione di un file da 140 MB | dirty, 1 temporaneo parziale | `chkdsk` pulito dopo /f | temporaneo rimosso, file vecchio intatto |
+| 2 | copia di una cartella da 300 file | dirty, 300 temporanei nella radice | `chkdsk` pulito dopo /f | temporanei rimossi, file preesistenti intatti; **resta la cartella di destinazione vuota** |
+| 3 | eliminazione di quella cartella | dirty, 69 file eliminati e 231 intatti | `chkdsk` pulito dopo /f | i 231 file restano integri; l'eliminazione si completa con una nuova richiesta |
+
+Prima di ogni ripresa, il controllo in sola lettura del motore rifiuta il
+volume sporco (`volume-needs-check`) senza scrivere e accetta lo stesso volume
+dopo la riparazione di Windows. Dopo le tre prove il volume è pulito
+(`dirty=0 pending=0`), contiene esattamente i 21 file attesi con gli hash
+originali, e un ultimo `chkdsk` su Windows non trova problemi.
+
+Osservazioni da correggere:
+- dopo una copia di cartella interrotta e ripristinata, le cartelle create
+  dal lotto restano vuote. L'annullamento dall'app invece le rimuove: il
+  diario non registra le cartelle create;
+- copiando una cartella su una cartella esistente con lo stesso nome, l'app
+  unisce senza chiedere. Il Finder chiede «Unisci / Sostituisci»; i conflitti
+  sui singoli file sono comunque chiesti.
+
+Nota di metodo: in un giro la riscrittura con `authopen -w` alimentato da
+una pipe ha restituito successo senza che i settori riparati arrivassero sulla
+chiavetta. La rilettura di controllo l'ha scoperto; gli script ora leggono da
+file e confrontano sempre l'hash della chiavetta dopo la scrittura.
+
+Evidenze: `Build/evidence/usb2-20261028/` (script, hash, esiti e log di
+`chkdsk`); VHD di ogni giro su Windows in `C:\OpenHDD-Lab\usb2-20261028`.
+Restano da fare: prova su un secondo Mac e decisione sui 12 rifiuti del
+collaudo del 30 settembre.
+
 ## Collaudo storico della scrittura
 
 Gli esiti del 28 settembre qui sotto sono registrazioni delle versioni
 precedenti, non una ricertificazione del branch `codex/recovery-hardening`.
-Per il nuovo diario valgono gli esiti del collaudo corrente sopra. Le prove
-USB sacrificabili e su un secondo Mac restano da ripetere; i risultati
-storici e le simulazioni locali non le sostituiscono.
+Per il nuovo diario valgono gli esiti dei collaudi correnti sopra: la prova
+su chiavetta sacrificabile è stata ripetuta il 28 ottobre 2026, quella su un
+secondo Mac resta da fare; i risultati storici e le simulazioni locali non la
+sostituiscono.
 
 | Gate | Prova | Esito (28 settembre 2026) |
 |---|---|---|
