@@ -176,10 +176,15 @@ essere eliminato dopo la verifica del diario. Il controllo è stato corretto
 senza cambiare il motore; primo esito e riesecuzione restano conservati in
 `mac-roundtrip/` e `mac-roundtrip-verified/`.
 
-Merge su main, pacchetto di rilascio e sostituzione dell'app installata
-restano sospesi: la recuperabilità automatica non è dimostrata per tutti i
-casi. La build candidata è in `Build/Custodrive.app`. Non eliminare i diari
-dei 12 rifiuti per far passare il gate.
+La recuperabilità automatica non è dimostrata per tutti i casi: i 12
+rifiuti restano rifiuti sicuri (nessuna scrittura, contenuti esportabili con
+hash corretti). Non eliminare i loro diari per far passare il gate.
+
+Il 28 ottobre 2026, dopo la prova su chiavetta reale (sezione sotto) e con
+tutte le suite automatiche superate, il branch è stato unito a `main` per
+decisione del proprietario. Restano aperti la prova su un secondo Mac e le
+due osservazioni della prova su chiavetta; pacchetto di rilascio e
+sostituzione dell'app installata sono decisioni separate.
 
 Restano separati i limiti del filesystem dal recupero applicativo, le prove
 hardware USB e il secondo Mac. Nessuna prova fisica svolta in questa campagna.
