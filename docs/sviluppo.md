@@ -26,7 +26,8 @@ parte del formato che il recupero riconosce.
 | `Tests/run-edit-probe.sh` | nuova cartella, rinomina, eliminazione, rifiuti, interruzioni |
 | `Tests/run-v3-probe.sh` | cartelle, 300 file per lotto, sostituzione con diario, spostamento, annullamento |
 | `Tests/run-session-probe.sh` | sessione di modifica: protocollo, sfoglia, esporta, rifiuti, fine input, annullamento |
-| `Tests/run-recovery-probe.sh` | diari contraffatti/troncati, alias NTFS, riferimenti MFT obsoleti, hash sostituzione, rinomina cartelle e recupero nuovamente interrotto; rifiuti senza modifiche all'immagine |
+| `Tests/run-recovery-probe.sh` | diari contraffatti/troncati, alias NTFS, riferimenti MFT obsoleti, hash sostituzione, rinomina cartelle e recupero nuovamente interrotto; copie di cartelle interrotte (diario v3) senza cartelle vuote residue; rifiuti senza modifiche all'immagine |
+| `Tests/run-copy-scanner-test.sh` | confronto della copia con il disco senza disco: cartelle esistenti da unire, file d'intralcio |
 | `Tests/run-ui-selftest.sh IMMAGINE` | immagine MBR sacrificabile con `old.bin` e `Documenti`: drop, trascinamento, Quick Look non modificabile, copia esportata conservata dopo fine sessione |
 | `OPENHDD_CAMPAIGN_EDIT=… Tests/run-powercut-campaign.sh` | tagli di corrente a ogni scrittura (copia, cartelle, sostituzione, spostamento, rinomina, nuova cartella, eliminazione) |
 | `Tests/prepare-windows-v3-cases.sh` + `Tests/windows/verify-v1-cases.ps1` | verifica `chkdsk` su Windows di casi completati, interrotti e tagliati |
@@ -213,13 +214,19 @@ dopo la riparazione di Windows. Dopo le tre prove il volume è pulito
 (`dirty=0 pending=0`), contiene esattamente i 21 file attesi con gli hash
 originali, e un ultimo `chkdsk` su Windows non trova problemi.
 
-Osservazioni da correggere:
+Osservazioni, corrette lo stesso giorno (vedi il diario delle cartelle in
+[piano-scrittura-v1.md](piano-scrittura-v1.md)):
 - dopo una copia di cartella interrotta e ripristinata, le cartelle create
-  dal lotto restano vuote. L'annullamento dall'app invece le rimuove: il
-  diario non registra le cartelle create;
+  dal lotto restavano vuote, mentre l'annullamento dall'app le rimuove: il
+  diario non registrava le cartelle create. Ora un diario v3 le registra e il
+  ripristino toglie quelle ancora vuote;
 - copiando una cartella su una cartella esistente con lo stesso nome, l'app
-  unisce senza chiedere. Il Finder chiede «Unisci / Sostituisci»; i conflitti
-  sui singoli file sono comunque chiesti.
+  univa senza chiedere. Ora chiede «Unisci / Annulla» prima della domanda sui
+  file già presenti.
+
+Correzioni verificate su immagini (probe di ripristino, nuovo test del
+confronto, campagna di tagli `tree`: 256 casi, zero violazioni locali); la
+prova su chiavetta reale non è stata ripetuta dopo le correzioni.
 
 Nota di metodo: in un giro la riscrittura con `authopen -w` alimentato da
 una pipe ha restituito successo senza che i settori riparati arrivassero sulla

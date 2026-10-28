@@ -626,6 +626,16 @@ final class BrowserModel: ObservableObject {
         }
         var plan = CopyPlan(partition: partition, volumeName: volume, entries: scan.entries,
                             folders: scan.folders, destination: folder)
+        if !scan.merging.isEmpty {
+            let ask = NSAlert()
+            ask.messageText = scan.merging.count == 1 ?
+                L("A folder with the same name already exists") :
+                L("\(scan.merging.count) folders with the same name already exist")
+            ask.informativeText = listed(scan.merging) + L("\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied.")
+            ask.addButton(withTitle: L("Merge"))
+            ask.addButton(withTitle: L("Cancel"))
+            guard ask.runModal() == .alertFirstButtonReturn else { return }
+        }
         if !scan.existing.isEmpty {
             let ask = NSAlert()
             ask.messageText = scan.existing.count == 1 ?

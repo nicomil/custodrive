@@ -125,6 +125,9 @@ Expulsar el disco o cerrar la aplicación también termina la edición.
   antes de aparecer con su nombre definitivo.
 - **Archivos existentes**: Custodrive pregunta si quieres **Sustituir** u
   **Omitir estos**. El archivo anterior se conserva hasta verificar el nuevo.
+- **Carpetas existentes**: si copias una carpeta sobre otra con el mismo
+  nombre, Custodrive pregunta antes; **Combinar** añade los elementos nuevos
+  y no elimina nada.
 - Las **copias grandes** avanzan por lotes (1000 archivos u 8 GB cada vez),
   con una sola barra, velocidad y tiempo restante.
 

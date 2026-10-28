@@ -20,6 +20,11 @@ struct LocalizationTest {
             keys = currentKeys
             for (key, value) in catalog {
                 precondition(!value.isEmpty)
+                // Messages are joined to lists and to each other: a translation
+                // must keep the key's leading and trailing line breaks.
+                precondition(key.prefix(while: \.isNewline) == value.prefix(while: \.isNewline) &&
+                    String(key.reversed()).prefix(while: \.isNewline) ==
+                    String(value.reversed()).prefix(while: \.isNewline), "Line breaks: \(language) \(key)")
                 precondition(key.matches(of: placeholders).map { String($0.1) }.sorted() ==
                     value.matches(of: placeholders).map { String($0.1) }.sorted(), key)
                 precondition(LocalizedMessage(stringLiteral: key).rendered(language: language, resources: resources) == value)

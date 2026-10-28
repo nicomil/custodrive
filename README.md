@@ -122,6 +122,8 @@ or quitting the app, also finishes the edit session automatically.
   original before it appears under its final name.
 - **Existing files**: Custodrive asks whether to **Replace** or **Skip These**.
   The old file stays until the new one has been verified.
+- **Existing folders**: copying a folder onto one with the same name asks
+  first; **Merge** adds the new items and removes nothing.
 - **Large copies** run in batches (1000 files or 8 GB at a time), with one
   progress bar, transfer speed and time remaining.
 

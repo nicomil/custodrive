@@ -299,3 +299,7 @@
 "Invalid request." = "Solicitud no válida.";
 "Operation not allowed." = "Operación no permitida.";
 "Opening" = "Apertura";
+"A folder with the same name already exists" = "Ya existe una carpeta con el mismo nombre";
+"{0} folders with the same name already exist" = "Ya existen {0} carpetas con el mismo nombre";
+"\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied." = "\n\n«Combinar»: los elementos copiados se añaden a la carpeta existente y no se elimina nada de lo que contiene. Para los archivos con el mismo nombre se pregunta a continuación.\n«Cancelar»: no se copia nada.";
+"Merge" = "Combinar";

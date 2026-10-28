@@ -79,6 +79,9 @@ struct CopyScan {
     var skipped: [String] = []
     /// Indexes of entries whose name already exists as a file on the volume.
     var existing: [Int] = []
+    /// Folders being copied (the outermost ones) that already exist on the
+    /// volume: their contents would be merged, so the user is asked first.
+    var merging: [String] = []
 }
 
 enum CopyScanner {
@@ -208,11 +211,16 @@ enum CopyScanner {
             listings[folder] = map
             return map
         }
+        let planned = Set(scan.folders)
         for folder in scan.folders {
             var parts = folder.split(separator: "/").map(String.init)
             guard let leaf = parts.popLast() else { continue }
-            if let found = listing(parts.joined(separator: "/"))[fold(leaf)], !found.isDirectory {
+            let parent = parts.joined(separator: "/")
+            guard let found = listing(parent)[fold(leaf)] else { continue }
+            if !found.isDirectory {
                 scan.problems.append(L("“\(folder)”: a file with this name already exists on the disk"))
+            } else if !planned.contains(parent) {
+                scan.merging.append(join(parent, found.name))
             }
         }
         for (index, entry) in scan.entries.enumerated() {

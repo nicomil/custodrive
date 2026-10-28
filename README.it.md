@@ -123,6 +123,8 @@ Espelli, o la chiusura dell'app, terminano anche le modifiche da soli.
   l'originale prima di comparire con il suo nome.
 - **File già presenti**: Custodrive chiede se **sostituirli** o
   **saltarli**. Il vecchio file resta finché il nuovo non è stato verificato.
+- **Cartelle già presenti**: se copi una cartella su una con lo stesso nome,
+  Custodrive chiede prima; **Unisci** aggiunge i nuovi elementi e non toglie niente.
 - Le **copie grandi** avanzano a lotti (1000 file o 8 GB alla volta), con
   una sola barra, la velocità e il tempo rimanente.
 

@@ -299,3 +299,7 @@
 "Invalid request." = "Invalid request.";
 "Operation not allowed." = "Operation not allowed.";
 "Opening" = "Opening";
+"A folder with the same name already exists" = "A folder with the same name already exists";
+"{0} folders with the same name already exist" = "{0} folders with the same name already exist";
+"\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied." = "\n\n“Merge”: the copied items are added to the existing folder and nothing in it is removed. Files with the same name are asked about next.\n“Cancel”: nothing is copied.";
+"Merge" = "Merge";
