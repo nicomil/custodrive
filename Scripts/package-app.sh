@@ -23,7 +23,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 cat > "$stage/Source.txt" <<EOF
 Custodrive $version is free software under GPL-2.0-or-later (see License.txt).
-It includes NTFS-3G 2026.7.7 by Tuxera, also under GPL-2.0-or-later.
+Its copy engine uses the NTFS-3G 2026.7.7 library (libntfs-3g) by Tuxera,
+also under GPL-2.0-or-later, to read and write NTFS structures.
 
 Complete source code: https://github.com/nicomil/custodrive
 Source revision of this package: $revision

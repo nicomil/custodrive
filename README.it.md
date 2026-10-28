@@ -264,8 +264,8 @@ sh Tests/run-localization-test.sh  # verifica i tre cataloghi lingua
 ```
 
 Build, motore da riga di comando, test automatici, collaudo su Windows e
-storia del progetto: [docs/sviluppo.md](docs/sviluppo.md). Il motore NTFS si
-basa su [NTFS-3G](vendor/README.it.md).
+storia del progetto: [docs/sviluppo.md](docs/sviluppo.md). Il motore di copia usa
+la libreria [NTFS-3G](vendor/README.it.md) per leggere e scrivere le strutture NTFS.
 
 I testi UI sono in `Resources/Localization/{en,it,es}.lproj`. Inglese
 predefinito e di riserva. `CustodriveLanguage` salva la scelta; il riavvio
@@ -276,7 +276,8 @@ nomi dei file conservano i valori originali.
 
 Custodrive è software libero, distribuito sotto la
 [GNU General Public License, versione 2 o (a tua scelta) qualunque versione successiva](LICENSE)
-(GPL-2.0-or-later). Il motore di copia usa [NTFS-3G](vendor/README.it.md) di
-Tuxera, con la stessa licenza; i sorgenti originali di NTFS-3G sono in
+(GPL-2.0-or-later). Il motore di copia usa la libreria
+[NTFS-3G](vendor/README.it.md) (libntfs-3g) di Tuxera, con la stessa licenza,
+per leggere e scrivere le strutture NTFS; i sorgenti originali di NTFS-3G sono in
 `vendor/`. Custodrive è fornito senza alcuna garanzia: tieni una copia dei
 dati importanti.
